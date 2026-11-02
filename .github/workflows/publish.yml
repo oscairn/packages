@@ -17,8 +17,8 @@ permissions:
   id-token: write
 
 env:
-  OSCAIRN_REPOSITORY: jbschooley/oscairn # the Oscairn source repository
-  OSCAIRN_COMMIT: "69d3e07059b3d82d477b9475c47efb9d47999529" # a full commit of it that has `oscairn-sign file`
+  OSCAIRN_REPOSITORY: oscairn/oscairn # the Oscairn source repository
+  OSCAIRN_COMMIT: "617ef884a5c1115cefcbf5adbd9476d0df828df5" # a full commit of it that has `oscairn-sign file`
 
 jobs:
   publish:
