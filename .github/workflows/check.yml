@@ -10,7 +10,7 @@ permissions:
 
 env:
   OSCAIRN_REPOSITORY: jbschooley/oscairn # the Oscairn source repository
-  OSCAIRN_COMMIT: "89cf40a0e840e82d22f4123fb61ace72d25a1d85" # a full commit of it that has `oscairn-sign file`
+  OSCAIRN_COMMIT: "717006d34456f81f06e5d7b71b5ae398d36ebd05" # a full commit of it that has `oscairn-sign file`
 
 jobs:
   check:
@@ -20,7 +20,10 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Check out the base branch
-        # The checks run main's scripts, so a pull request cannot change what checks it.
+        # Only build-index.py comes from here; the job itself runs from the pull request's own
+        # checkout, so a pull request can still replace this job. The real guard is publish.yml,
+        # which re-checks against the last published commit that no published release changed,
+        # plus CODEOWNERS (with Code Owners review required on main) on what runs and the keys.
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.base.sha }}
