@@ -1,0 +1,11 @@
+{
+  "repository": "org.oscairn.main",
+  "name": "Oscairn",
+  "blobBase": "https://github.com/oscairn/packages/releases/download/blobs-",
+  "mirrors": [],
+  "rootKey": "6a7eceba0a34104fea44e99e8c904fc53f410b4ad7ee615bbb51bf6876630841",
+  "indexKey": {
+    "key": "fac793b1e5fcf79b39a97ef6a6291c440f031ae2e8508402dd65b91b61a07f33",
+    "signature": "4895d5fbf3ed58ee3c769ee0e80d801cb69efa16ffa858bb6468644cf17e076d6d028c80d9478d32ef47a3cf120653fe56bd16373940da6a3523edfeb947d70c"
+  }
+}
