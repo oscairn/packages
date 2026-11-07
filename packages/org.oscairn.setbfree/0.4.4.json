@@ -1,0 +1,27 @@
+{
+  "format": "oscairn.repository-release",
+  "version": 1,
+  "id": "org.oscairn.setbfree",
+  "release": "0.4.4",
+  "publisher": "org.oscairn",
+  "summary": "The setBfree tonewheel organ and its Leslie effect, with Oscairn sound contexts.",
+  "license": "GPL-2.0-or-later AND MIT",
+  "tags": [
+    "instrument",
+    "organ"
+  ],
+  "channel": "stable",
+  "platforms": [
+    "macos-arm64"
+  ],
+  "source": {
+    "url": "https://github.com/oscairn/setBfree",
+    "revision": "b686c9ad94895a8fcf14e1d62a6fe1b4a56c506d"
+  },
+  "archive": {
+    "path": "0.4.4.olib",
+    "sha256": "17f34aea02d8ea4727b4debcae75c0f0427563ae8227e7655b9e830fa58345d0",
+    "size": 146179
+  },
+  "yanked": null
+}
