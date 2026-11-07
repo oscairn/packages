@@ -1,0 +1,30 @@
+{
+  "format": "oscairn.repository-release",
+  "version": 1,
+  "id": "org.oscairn.effects",
+  "release": "0.1.0",
+  "publisher": "org.oscairn",
+  "summary": "Oscairn's effects (Reverb with Hall A, EQ, Delay, Dynamics) built on sst-effects.",
+  "license": "GPL-3.0-or-later AND MIT",
+  "tags": [
+    "audio-effect",
+    "reverb",
+    "equalizer",
+    "delay",
+    "compressor"
+  ],
+  "channel": "stable",
+  "platforms": [
+    "macos-arm64"
+  ],
+  "source": {
+    "url": "https://github.com/oscairn/sst-effects",
+    "revision": "a9ea6cb9083a8a750aeed98cd62ed480c524d695"
+  },
+  "archive": {
+    "path": "0.1.0.olib",
+    "sha256": "66927cb53f5a8861ee684b1e7f40f51115e55136ec266e6d7fbde724dbf303dc",
+    "size": 253439
+  },
+  "yanked": null
+}
