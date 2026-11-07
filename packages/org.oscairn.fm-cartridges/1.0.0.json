@@ -1,0 +1,24 @@
+{
+  "format": "oscairn.repository-release",
+  "version": 1,
+  "id": "org.oscairn.fm-cartridges",
+  "release": "1.0.0",
+  "publisher": "org.oscairn",
+  "summary": "Dexed's built-in DX7 cartridges, unmodified, for Oscairn FM: Jean-Marc Desprez's SynprezFM compilation, as in upstream Dexed",
+  "license": "GPL-3.0-or-later",
+  "tags": [
+    "patches",
+    "synthesizer"
+  ],
+  "channel": "stable",
+  "source": {
+    "url": "https://github.com/oscairn/dexed",
+    "revision": "87e27917a2cba6bc61272be9c3b78317e6c0d451"
+  },
+  "archive": {
+    "path": "1.0.0.olib",
+    "sha256": "d09214abf35ccb0e77b166e33fa36697e184ee54daa3a3b45ad70021832594b0",
+    "size": 116804
+  },
+  "yanked": null
+}
