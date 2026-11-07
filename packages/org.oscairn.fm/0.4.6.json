@@ -1,0 +1,35 @@
+{
+  "format": "oscairn.repository-release",
+  "version": 1,
+  "id": "org.oscairn.fm",
+  "release": "0.4.6",
+  "publisher": "org.oscairn",
+  "summary": "FM synthesizer based on Dexed/MSFA, with Oscairn sound contexts, snapshots, voice budget and instance sharing; built-in cartridges are Jean-Marc Desprez's SynprezFM compilation, as in upstream Dexed.",
+  "license": "GPL-3.0-or-later AND MIT AND Apache-2.0 AND 0BSD",
+  "tags": [
+    "instrument",
+    "synthesizer"
+  ],
+  "channel": "stable",
+  "platforms": [
+    "macos-arm64"
+  ],
+  "source": {
+    "url": "https://github.com/oscairn/dexed",
+    "revision": "0d74131d40a3ac778dbc6b8b7a37b0e27f286e19"
+  },
+  "dependencies": {
+    "assets": [
+      {
+        "id": "org.oscairn.fm-cartridges",
+        "version": "1.0.0"
+      }
+    ]
+  },
+  "archive": {
+    "path": "0.4.6.olib",
+    "sha256": "c91eb36649b7b4257b096b23eed4cbe557942d5381c76741966b8bb16070aba2",
+    "size": 461180
+  },
+  "yanked": null
+}
