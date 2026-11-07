@@ -1,0 +1,27 @@
+{
+  "format": "oscairn.repository-release",
+  "version": 1,
+  "id": "org.oscairn.legacy-sampler",
+  "release": "0.1.0",
+  "publisher": "org.oscairn",
+  "summary": "Deprecated in favor of the sfizz-based Oscairn Sampler: one-region SFZ patches over WAV samples",
+  "license": "AGPL-3.0-or-later AND MIT AND (Unlicense OR MIT-0)",
+  "tags": [
+    "instrument",
+    "sampler"
+  ],
+  "channel": "stable",
+  "platforms": [
+    "macos-arm64"
+  ],
+  "source": {
+    "url": "https://github.com/oscairn/sampler",
+    "revision": "814fd5462678efd335e26eb88dbc5c5f97a5c903"
+  },
+  "archive": {
+    "path": "0.1.0.olib",
+    "sha256": "e0c94af07db0727e9946fac4cd91ef74248e52d0bcdb41d938e992b5bc6bccae",
+    "size": 87083
+  },
+  "yanked": null
+}

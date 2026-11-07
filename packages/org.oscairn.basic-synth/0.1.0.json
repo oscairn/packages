@@ -1,0 +1,27 @@
+{
+  "format": "oscairn.repository-release",
+  "version": 1,
+  "id": "org.oscairn.basic-synth",
+  "release": "0.1.0",
+  "publisher": "org.oscairn",
+  "summary": "A small polyphonic subtractive synth for tests and demos",
+  "license": "AGPL-3.0-or-later AND MIT",
+  "tags": [
+    "instrument",
+    "synthesizer"
+  ],
+  "channel": "stable",
+  "platforms": [
+    "macos-arm64"
+  ],
+  "source": {
+    "url": "https://github.com/oscairn/oscairn",
+    "revision": "8a8fcc6ae2955755e4c6650cdef63761d4a642ac"
+  },
+  "archive": {
+    "path": "0.1.0.olib",
+    "sha256": "5b62e4b93bb0ad433d00d679c3d07b6238bf7c762cb95d80cfaec306de897125",
+    "size": 44320
+  },
+  "yanked": null
+}

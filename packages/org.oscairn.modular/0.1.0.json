@@ -1,0 +1,28 @@
+{
+  "format": "oscairn.repository-release",
+  "version": 1,
+  "id": "org.oscairn.modular",
+  "release": "0.1.0",
+  "publisher": "org.oscairn",
+  "summary": "A patchable modular synth: chillbeast's Modular engine from his KICK firmware (github.com/chillbeast/0700-AAM)",
+  "license": "AGPL-3.0-or-later AND AGPL-3.0-only AND Zlib AND MIT",
+  "tags": [
+    "instrument",
+    "synthesizer",
+    "modular"
+  ],
+  "channel": "stable",
+  "platforms": [
+    "macos-arm64"
+  ],
+  "source": {
+    "url": "https://github.com/oscairn/oscairn",
+    "revision": "8a8fcc6ae2955755e4c6650cdef63761d4a642ac"
+  },
+  "archive": {
+    "path": "0.1.0.olib",
+    "sha256": "d357ace93e6995ba33645dbcf533405441b896898f3084d8865edefc29610944",
+    "size": 872448
+  },
+  "yanked": null
+}

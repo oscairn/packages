@@ -1,0 +1,24 @@
+{
+  "format": "oscairn.repository-release",
+  "version": 1,
+  "id": "org.oscairn.analog-factory",
+  "release": "1.0.0",
+  "publisher": "org.oscairn",
+  "summary": "Surge XT's factory patches, unmodified, for Oscairn Analog",
+  "license": "GPL-3.0-or-later AND (GPL-3.0-or-later OR CC0-1.0)",
+  "tags": [
+    "patches",
+    "synthesizer"
+  ],
+  "channel": "stable",
+  "source": {
+    "url": "https://github.com/surge-synthesizer/surge",
+    "revision": "5a4828a33ac4b2e2b45671b34e9e0e3f0c614765"
+  },
+  "archive": {
+    "path": "1.0.0.olib",
+    "sha256": "17cece6afc064d49c012707965918be6b1a40505848ab216235d81f88b44c6f8",
+    "size": 7413069
+  },
+  "yanked": null
+}

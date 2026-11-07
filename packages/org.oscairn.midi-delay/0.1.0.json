@@ -1,0 +1,27 @@
+{
+  "format": "oscairn.repository-release",
+  "version": 1,
+  "id": "org.oscairn.midi-delay",
+  "release": "0.1.0",
+  "publisher": "org.oscairn",
+  "summary": "Delays notes, releases and controllers by up to two seconds",
+  "license": "AGPL-3.0-or-later AND MIT",
+  "tags": [
+    "note-effect",
+    "midi"
+  ],
+  "channel": "stable",
+  "platforms": [
+    "macos-arm64"
+  ],
+  "source": {
+    "url": "https://github.com/oscairn/oscairn",
+    "revision": "8a8fcc6ae2955755e4c6650cdef63761d4a642ac"
+  },
+  "archive": {
+    "path": "0.1.0.olib",
+    "sha256": "78dbe579582c8d37d94a0702aee468b904c41e2caa245c6ab66f5cab30aee322",
+    "size": 22470
+  },
+  "yanked": null
+}

@@ -1,0 +1,27 @@
+{
+  "format": "oscairn.repository-release",
+  "version": 1,
+  "id": "org.oscairn.splitters",
+  "release": "0.1.0",
+  "publisher": "org.oscairn",
+  "summary": "Split divides stereo into left and right, mid and side, or frequency bands; Join puts the lanes back together",
+  "license": "AGPL-3.0-or-later AND MIT",
+  "tags": [
+    "audio-effect",
+    "utility"
+  ],
+  "channel": "stable",
+  "platforms": [
+    "macos-arm64"
+  ],
+  "source": {
+    "url": "https://github.com/oscairn/oscairn",
+    "revision": "8a8fcc6ae2955755e4c6650cdef63761d4a642ac"
+  },
+  "archive": {
+    "path": "0.1.0.olib",
+    "sha256": "29e4d7bced6bdfbcd992d4f8fb9e3277f80a3aaa1df6b88d040cd88fa9d804d3",
+    "size": 26807
+  },
+  "yanked": null
+}
