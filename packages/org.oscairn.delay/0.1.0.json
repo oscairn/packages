@@ -1,0 +1,27 @@
+{
+  "format": "oscairn.repository-release",
+  "version": 1,
+  "id": "org.oscairn.delay",
+  "release": "0.1.0",
+  "publisher": "org.oscairn",
+  "summary": "A tempo-synced stereo ping-pong delay",
+  "license": "AGPL-3.0-or-later AND MIT",
+  "tags": [
+    "audio-effect",
+    "delay"
+  ],
+  "channel": "stable",
+  "platforms": [
+    "macos-arm64"
+  ],
+  "source": {
+    "url": "https://github.com/oscairn/oscairn",
+    "revision": "8a8fcc6ae2955755e4c6650cdef63761d4a642ac"
+  },
+  "archive": {
+    "path": "0.1.0.olib",
+    "sha256": "50f684486f2cc9e9301bfa2ef141d85536735c5ed0c722b55773214f299630dd",
+    "size": 24177
+  },
+  "yanked": null
+}

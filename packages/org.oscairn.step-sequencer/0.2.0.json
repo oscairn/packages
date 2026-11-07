@@ -1,0 +1,27 @@
+{
+  "format": "oscairn.repository-release",
+  "version": 1,
+  "id": "org.oscairn.step-sequencer",
+  "release": "0.2.0",
+  "publisher": "org.oscairn",
+  "summary": "Two tracks and two patterns following the host transport",
+  "license": "AGPL-3.0-or-later AND MIT",
+  "tags": [
+    "note-effect",
+    "sequencer"
+  ],
+  "channel": "stable",
+  "platforms": [
+    "macos-arm64"
+  ],
+  "source": {
+    "url": "https://github.com/oscairn/oscairn",
+    "revision": "8a8fcc6ae2955755e4c6650cdef63761d4a642ac"
+  },
+  "archive": {
+    "path": "0.2.0.olib",
+    "sha256": "472b54427e1e6695a1681f4042c1c7f4e10b852805c12a97c359b4612e796e39",
+    "size": 22710
+  },
+  "yanked": null
+}

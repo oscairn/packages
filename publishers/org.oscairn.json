@@ -1,0 +1,8 @@
+{
+  "format": "oscairn.repository-publisher",
+  "version": 1,
+  "id": "org.oscairn",
+  "name": "Oscairn",
+  "key": "db87e97dba5b24564c782f473c543681bd87c0818bc2e41f37d1f100f3360d69",
+  "verification": "https://oscairn.org/.well-known/oscairn-publisher.json"
+}

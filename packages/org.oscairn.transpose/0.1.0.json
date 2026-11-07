@@ -1,0 +1,27 @@
+{
+  "format": "oscairn.repository-release",
+  "version": 1,
+  "id": "org.oscairn.transpose",
+  "release": "0.1.0",
+  "publisher": "org.oscairn",
+  "summary": "Transposes notes by up to four octaves either way",
+  "license": "AGPL-3.0-or-later AND MIT",
+  "tags": [
+    "note-effect",
+    "midi"
+  ],
+  "channel": "stable",
+  "platforms": [
+    "macos-arm64"
+  ],
+  "source": {
+    "url": "https://github.com/oscairn/oscairn",
+    "revision": "8a8fcc6ae2955755e4c6650cdef63761d4a642ac"
+  },
+  "archive": {
+    "path": "0.1.0.olib",
+    "sha256": "5cf169a2625d2cbde60cfa19802a969467927f0cf08581a2ba691b58e4e825f9",
+    "size": 22492
+  },
+  "yanked": null
+}
