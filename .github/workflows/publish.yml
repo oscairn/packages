@@ -18,7 +18,7 @@ permissions:
 
 env:
   OSCAIRN_REPOSITORY: oscairn/oscairn # the Oscairn source repository
-  OSCAIRN_COMMIT: "9598feee27251adf8257a46d2b46683b5237aeef" # a full commit of it that has `oscairn-sign file` and plugin packages
+  OSCAIRN_COMMIT: "8a8fcc6ae2955755e4c6650cdef63761d4a642ac" # a full commit of it that has `oscairn-sign file`, license and source, and asset packages
 
 jobs:
   publish:

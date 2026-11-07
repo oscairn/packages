@@ -3,8 +3,8 @@
 """Builds an Oscairn repository (RFC 0031) from packages/, publishers/ and revoked.json.
 
 Checks every release on the way: the records' schema, each archive's hash, archive safety and
-every signature (through `oscairn-sign verify`), the publisher's key, and the platform builds
-each release claims. With --previous, also that no published release changed. Writes the
+every signature (through `oscairn-sign verify`), the publisher's key, the platform builds each
+release claims, and that no build loads libraries from outside the system and its bundle. With --previous, also that no published release changed. Writes the
 repository's static tree to --out:
 
     repository.json            the root, unsigned: sign it with `oscairn-sign file`
@@ -155,7 +155,8 @@ def fetch(record, record_path, cache, problems):
 
 
 def verify(tool, archive, where, problems):
-    """`oscairn-sign verify`: archive safety, every hash and every signature. Its report, or None."""
+    """`oscairn-sign verify`: archive safety, every hash and every signature, and each build's
+    libraries from outside the system and its bundle. Its report, or None."""
     try:
         run = subprocess.run([tool, "verify", str(archive)], capture_output=True, text=True, timeout=900)
     except (OSError, subprocess.TimeoutExpired) as e:
@@ -164,13 +165,15 @@ def verify(tool, archive, where, problems):
     if run.returncode != 0:
         problems.add(where, f"the archive is refused: {run.stderr.strip()}")
         return None
-    report = {"archive": None, "builds": []}
+    report = {"archive": None, "builds": [], "outside": []}
     for line in run.stdout.splitlines():
         words = line.split()
         if words[:1] == ["archive"] and len(words) == 3:
             report["archive"] = (words[1], words[2])
         elif words[:1] == ["build"] and len(words) == 6:
             report["builds"].append((words[1], words[2], words[3], words[4], words[5].split(",")))
+        elif words[:1] == ["outside"] and len(words) >= 6:
+            report["outside"].append(line.split(None, 5)[1:])  # format, ID, version, platform, what
     return report
 
 
@@ -192,6 +195,8 @@ def facts(archive):
         types[kind] = types.get(kind, 0) + 1
     for plugin in manifest["plugins"]:
         types[plugin["format"]] = types.get(plugin["format"], 0) + 1
+    if manifest["kind"] == "asset":
+        types["oscairn.asset"] = 1
     return manifest, {"sha256": sha256(manifest_bytes), "size": len(manifest_bytes)}, types, platforms, common
 
 
@@ -242,6 +247,8 @@ def read_release(path, root, publishers, tool, cache, problems):
     for fmt, plugin, version, platform, signers in report["builds"]:
         if signer not in signers:
             problems.add(path, f"the {platform} build of {fmt} {plugin} {version} is not signed by its publisher's key {signer}")
+    for fmt, plugin, version, platform, what in report["outside"]:
+        problems.add(path, f"the {platform} build of {fmt} {plugin} {version} loads a library from outside the system and its bundle, which a device does not have: {what}")
     plugins = {(b[0], b[1], b[2]) for b in report["builds"]}
     for plugin in sorted(plugins):
         have = {b[3] for b in report["builds"] if b[:3] == plugin}
@@ -254,7 +261,22 @@ def read_release(path, root, publishers, tool, cache, problems):
         return None
 
     contents, manifest, types, platforms, common = facts(archive)
+    # The record's license and source are the archive's own (its §6 directions travel inside it).
+    if contents.get("license") and r.get("license") != contents["license"]:
+        problems.add(path, f"`license` is not the archive's ({contents['license']})")
+    source = r.get("source")
+    if source is not None and not (isinstance(source, dict) and set(source) == {"url", "revision"} and all(isinstance(v, str) for v in source.values())):
+        problems.add(path, "`source` is not {\"url\", \"revision\"}")
+    elif source != contents.get("source"):
+        problems.add(path, f"`source` is not the archive's ({json.dumps(contents.get('source'))})")
+    # The asset libraries it needs, as the archive names them; each is checked against the repository in main().
+    needs = contents.get("dependencies", {}).get("assets", [])
+    if r.get("dependencies", {"assets": []}) != {"assets": needs} and not (needs == [] and "dependencies" not in r):
+        problems.add(path, f"`dependencies` is not the archive's ({json.dumps({'assets': needs})})")
+    if len(problems) > before:
+        return None
     r["name"] = contents["name"]
+    r["_kind"], r["_needs"] = contents["kind"], needs
     return r, {
         "version": release,
         "channel": r.get("channel", "stable"),
@@ -381,6 +403,13 @@ def main():
         owners = {r["publisher"] for r, _ in releases}
         if len(owners) > 1:
             problems.add(f"packages/{pid}", f"a package keeps its publisher; these releases name {sorted(owners)}")
+    # Dependencies: every asset library a release needs is an asset package here, at the version it needs or later.
+    for pid, releases in sorted(packages.items()):
+        for r, _ in releases:
+            for need in r["_needs"]:
+                have = [x for x, _ in packages.get(need.get("id"), []) if x["_kind"] == "asset" and x.get("yanked") is None]
+                if not any(version_key(x["release"]) >= version_key(need.get("version", "")) for x in have):
+                    problems.add(f"packages/{pid}/{r['release']}.json", f"needs the asset library {need.get('id')} {need.get('version')} or later, which this repository does not have")
 
     revoked = load(root / "revoked.json", problems)
     if revoked is not None and check_format(revoked, "oscairn.repository-revocations", "revoked.json", problems):
