@@ -284,7 +284,8 @@ def read_release(path, root, publishers, tool, cache, problems):
         # shortcut: the whole archive is one blob until RFC 0031 step 1 stores it in pieces.
         "archive": {"sha256": r["archive"]["sha256"], "size": r["archive"]["size"]},
         "packageSignature": True,
-        "requires": r.get("requires", {}),
+        # The packages it needs, as RFC 0031's index names them: for now the asset libraries its archive names.
+        "requires": {**r.get("requires", {}), **({"packages": needs} if needs else {})},
         "types": types,
         "platforms": platforms,
         "common": common,
