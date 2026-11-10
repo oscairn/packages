@@ -1,0 +1,27 @@
+{
+  "format": "oscairn.repository-release",
+  "version": 1,
+  "id": "org.oscairn.sampler",
+  "release": "0.6.3",
+  "publisher": "org.oscairn",
+  "summary": "SFZ and AWM2-class sample player based on sfizz, with Oscairn sound contexts, snapshots, voice budget, instance sharing and the AWM2 element model (XA Control, Assign Switches, Key On Delay).",
+  "license": "BSD-2-Clause AND BSD-3-Clause AND MIT AND Apache-2.0 AND BSL-1.0 AND Zlib AND WTFPL AND Beerware AND CC0-1.0 AND (Unlicense OR MIT-0) AND (MIT OR Unlicense) AND LicenseRef-STK-4.3",
+  "tags": [
+    "instrument",
+    "sampler"
+  ],
+  "channel": "stable",
+  "platforms": [
+    "macos-arm64"
+  ],
+  "source": {
+    "url": "https://github.com/oscairn/sfizz",
+    "revision": "d2580c20cd1fca018fe83a29f8037bdfcb7f3eb1"
+  },
+  "archive": {
+    "path": "0.6.3.olib",
+    "sha256": "4b4289ae78a1c88c3aced003e9d66f17eb8d2368ab3e5c3149ac1765010a4646",
+    "size": 805992
+  },
+  "yanked": null
+}
