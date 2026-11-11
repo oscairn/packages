@@ -1,5 +1,5 @@
 name: oscairn-sign
-description: Builds oscairn-sign from the Oscairn repository at a pinned commit, cached by that commit.
+description: Builds oscairn-sign (and other Oscairn tools) from the Oscairn repository at a pinned commit, cached by that commit.
 inputs:
   repository:
     description: The Oscairn source repository, owner/name
@@ -7,10 +7,16 @@ inputs:
   commit:
     description: The full commit to build; it must have `oscairn-sign file`
     required: true
+  targets:
+    description: The tools to build, space-separated (oscairn-sign, oscairn-plugin-check)
+    default: oscairn-sign
 outputs:
   path:
     description: The built oscairn-sign
     value: ${{ runner.temp }}/oscairn-tools/oscairn-sign
+  dir:
+    description: The folder holding every tool built
+    value: ${{ runner.temp }}/oscairn-tools
 runs:
   using: composite
   steps:
@@ -18,32 +24,48 @@ runs:
       shell: bash
       env:
         COMMIT: ${{ inputs.commit }}
+        TARGETS: ${{ inputs.targets }}
       run: |
         if ! [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
           echo "::error::OSCAIRN_COMMIT is not set to a full commit of Oscairn (see README.md, Setting up)"
           exit 1
         fi
+        if ! [[ "$TARGETS" =~ ^[a-z-]+( [a-z-]+)*$ ]]; then
+          echo "::error::targets is not a list of tool names"
+          exit 1
+        fi
 
-    - name: Restore oscairn-sign
+    # Restored and saved here, not at the job's end: a job may run plugins after this, and none
+    # may change a tool that later runs reuse.
+    - name: Restore the tools
       id: cache
-      uses: actions/cache@v4
+      uses: actions/cache/restore@v4
       with:
         path: ${{ runner.temp }}/oscairn-tools
-        key: oscairn-sign-${{ runner.os }}-${{ inputs.commit }}
+        key: oscairn-sign-${{ runner.os }}-${{ runner.arch }}-${{ inputs.commit }}-${{ inputs.targets }}
 
-    - name: Build oscairn-sign
+    - name: Build the tools
       if: steps.cache.outputs.cache-hit != 'true'
       shell: bash
       env:
         REPOSITORY: ${{ inputs.repository }}
         COMMIT: ${{ inputs.commit }}
+        TARGETS: ${{ inputs.targets }}
       run: |
-        sudo apt-get update && sudo apt-get install -y ninja-build libsndfile1-dev # the configure needs the Sampler's dependency
+        # The configure needs the Sampler's dependency
+        if [[ "$RUNNER_OS" == "Linux" ]]; then sudo apt-get update && sudo apt-get install -y ninja-build libsndfile1-dev; else brew install ninja libsndfile; fi
         git init -q "$RUNNER_TEMP/oscairn"
         cd "$RUNNER_TEMP/oscairn"
         git fetch -q --depth 1 "https://github.com/$REPOSITORY.git" "$COMMIT"
         git checkout -q FETCH_HEAD
         cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-        cmake --build build --target oscairn-sign
+        cmake --build build --target $TARGETS
         mkdir -p "$RUNNER_TEMP/oscairn-tools"
-        cp build/core/control/oscairn-sign "$RUNNER_TEMP/oscairn-tools/"
+        for target in $TARGETS; do cp "build/core/control/$target" "$RUNNER_TEMP/oscairn-tools/"; done
+
+    - name: Save the tools
+      if: steps.cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ runner.temp }}/oscairn-tools
+        key: oscairn-sign-${{ runner.os }}-${{ runner.arch }}-${{ inputs.commit }}-${{ inputs.targets }}

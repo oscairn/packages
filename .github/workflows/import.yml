@@ -1,0 +1,219 @@
+# Imports a plugin release from one of Oscairn's forks (README.md, "Importing a release"): fetches
+# and checks it, plays each build on its own platform, and leaves the checked, unsigned candidate
+# as an artifact. With the OSCAIRN_PUBLISHER_KEY secret in the publisher-signing environment it
+# also signs it and opens a pull request, which Check checks and a maintainer merges. It never
+# merges, and runs only by hand: never on a pull request.
+name: Import a release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "The release, https://github.com/oscairn/<fork>/releases/tag/vX.Y.Z (or give the fork and tag below)"
+        required: false
+      repo:
+        description: "The fork, oscairn/<fork>"
+        required: false
+      tag:
+        description: "Its tag, vX.Y.Z"
+        required: false
+      accept-license-change:
+        description: "Accept a license or license files other than the package's last release's"
+        type: boolean
+        default: false
+
+permissions: {} # each job asks for what it needs
+
+concurrency:
+  group: import-${{ inputs.release }}-${{ inputs.repo }}-${{ inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  OSCAIRN_REPOSITORY: oscairn/oscairn # the Oscairn source repository
+  OSCAIRN_COMMIT: "37bb3315621d85303bf80c8e5647f3b4e3ce9cee" # as check.yml's; a full commit of it that has oscairn-plugin-check playing note effects
+
+jobs:
+  verify:
+    # The manifest against schemas/plugin-release.schema.json, every file's SHA-256 and size, the
+    # source an Oscairn fork whose tag is source.revision, each build's libraries, and the license
+    # and license files against the package's last release.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.verify.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - id: verify
+        name: Fetch and check the release
+        env:
+          RELEASE: ${{ inputs.release }}
+          REPO: ${{ inputs.repo }}
+          TAG: ${{ inputs.tag }}
+          ACCEPT: ${{ inputs.accept-license-change }}
+        run: |
+          if [ -n "$RELEASE" ]; then from=(--release "$RELEASE"); else from=(--repo "$REPO" --tag "$TAG"); fi
+          if [ "$ACCEPT" = true ]; then from+=(--accept-license-change); fi
+          python3 -I scripts/import-release.py verify "${from[@]}" --out "$RUNNER_TEMP/candidate" --packages .
+          echo "matrix=$(cat "$RUNNER_TEMP/candidate/matrix.json")" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate
+          path: ${{ runner.temp }}/candidate
+          retention-days: 1
+
+  plugin-check:
+    # Each build played on its own platform (import-release.py's PLATFORMS: macos-15 for
+    # macos-arm64, ubuntu-24.04-arm for linux-arm64). Plugin code runs here, so this job has no
+    # key and only a read token, and the tools are cached before it runs.
+    needs: verify
+    name: plugin-check ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.verify.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - id: tools
+        uses: ./.github/actions/oscairn-sign
+        with:
+          repository: ${{ env.OSCAIRN_REPOSITORY }}
+          commit: ${{ env.OSCAIRN_COMMIT }}
+          targets: oscairn-plugin-check
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: candidate
+          path: ${{ runner.temp }}/candidate
+
+      - name: Play each plugin
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          TOOL: ${{ steps.tools.outputs.dir }}/oscairn-plugin-check
+        run: python3 -I scripts/import-release.py plugin-check --candidate "$RUNNER_TEMP/candidate" --platform "$PLATFORM" --plugin-check "$TOOL"
+
+  candidate:
+    # The checked, unsigned candidate, for signing by hand: the builds, the license files, plan.json
+    # and sign.sh.
+    needs: plugin-check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions: {}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: candidate
+          path: candidate
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-candidate
+          path: candidate
+          retention-days: 30
+
+      - name: Say how to sign it by hand
+        run: |
+          {
+            echo "Checked. To sign it by hand, download the unsigned-candidate artifact, then:"
+            echo '```sh'
+            echo "sh candidate/sign.sh <publisher key> <oscairn-sign>"
+            echo "python3 scripts/import-release.py record --candidate candidate --oscairn-sign <oscairn-sign>   # in a checkout of this repository"
+            echo '```'
+            echo "and open a pull request with the record and archive it writes."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  sign:
+    # Only with OSCAIRN_PUBLISHER_KEY, an environment secret of publisher-signing (whose required
+    # reviewers approve each run, from main only). Only the Sign step sees the key; it never runs
+    # plugin code, and the key is written to a file only it can read and removed when it ends.
+    needs: candidate
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: publisher-signing
+    permissions:
+      contents: write # the pull request's branch
+      pull-requests: write
+    env:
+      HAS_KEY: ${{ secrets.OSCAIRN_PUBLISHER_KEY != '' }}
+    steps:
+      - name: Look for the publisher key
+        if: env.HAS_KEY != 'true'
+        run: echo "::notice::No OSCAIRN_PUBLISHER_KEY in the publisher-signing environment, so nothing is signed here; sign the unsigned-candidate artifact by hand."
+
+      - uses: actions/checkout@v4
+        if: env.HAS_KEY == 'true'
+        with:
+          persist-credentials: false
+
+      - id: tools
+        if: env.HAS_KEY == 'true'
+        uses: ./.github/actions/oscairn-sign
+        with:
+          repository: ${{ env.OSCAIRN_REPOSITORY }}
+          commit: ${{ env.OSCAIRN_COMMIT }}
+
+      - uses: actions/download-artifact@v4
+        if: env.HAS_KEY == 'true'
+        with:
+          name: unsigned-candidate
+          path: ${{ runner.temp }}/candidate
+
+      - name: Sign
+        if: env.HAS_KEY == 'true'
+        env:
+          OSCAIRN_PUBLISHER_KEY: ${{ secrets.OSCAIRN_PUBLISHER_KEY }}
+          SIGN: ${{ steps.tools.outputs.path }}
+        run: |
+          umask 077
+          key="$RUNNER_TEMP/publisher.key"
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$OSCAIRN_PUBLISHER_KEY" > "$key"
+          python3 -I scripts/import-release.py sign --candidate "$RUNNER_TEMP/candidate" --key "$key" --oscairn-sign "$SIGN"
+
+      - name: Record it, and check it as Check will
+        # The archive signed by the publisher's key in publishers/ (a wrong secret fails here), then
+        # build-index.py --check against this commit, so nothing published changes.
+        if: env.HAS_KEY == 'true'
+        env:
+          SIGN: ${{ steps.tools.outputs.path }}
+        run: |
+          mkdir "$RUNNER_TEMP/previous"
+          cp -R packages publishers "$RUNNER_TEMP/previous/"
+          python3 -I scripts/import-release.py record --candidate "$RUNNER_TEMP/candidate" --oscairn-sign "$SIGN" --packages .
+          python3 -I scripts/build-index.py --check --oscairn-sign "$SIGN" --repo . --previous "$RUNNER_TEMP/previous" \
+            --cache "$RUNNER_TEMP/cache" --out "$RUNNER_TEMP/site" --serial 0
+
+      - name: Open a pull request
+        # A pull request opened with the job's own token starts no workflow, so Check would not
+        # run on it; OSCAIRN_PR_TOKEN (a fine-grained token with contents and pull requests on this
+        # repository) opens it as someone whose pull requests Check runs on.
+        if: env.HAS_KEY == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.OSCAIRN_PR_TOKEN || github.token }}
+          JOB_TOKEN: ${{ secrets.OSCAIRN_PR_TOKEN == '' }}
+        run: |
+          read -r id version fork tag revision < <(python3 -I -c 'import json, sys; p = json.load(open(sys.argv[1])); print(p["id"], p["version"], p["source"]["url"].rsplit("/", 1)[1], p["tag"], p["source"]["revision"])' "$RUNNER_TEMP/candidate/plan.json")
+          branch="import/$id-$version"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add "packages/$id/$version.json" "packages/$id/$version.olib"
+          git commit -q -m "$id $version: oscairn/$fork $tag"
+          git push "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git" "HEAD:refs/heads/$branch"
+          gh pr create --base main --head "$branch" --title "$id $version" --body "Imported from https://github.com/oscairn/$fork/releases/tag/$tag (\`$revision\`) by $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID: its manifest, hashes, source tag, libraries and license checked, each build played by oscairn-plugin-check on its platform, signed with the publisher key. Merge once Check passes."
+          if [ "$JOB_TOKEN" = true ]; then
+            echo "::warning::Opened with the job's own token, which starts no workflow: close and reopen the pull request so Check runs, or set OSCAIRN_PR_TOKEN."
+          fi
