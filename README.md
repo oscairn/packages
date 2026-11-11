@@ -159,6 +159,59 @@ the tag is missing once any release or publisher is recorded: if the tag is lost
 the last published commit. `CODEOWNERS` holds only while `main`'s branch protection requires
 review from Code Owners.
 
+### Importing a release
+
+Oscairn's own plugins (its forks of Dexed, Surge, sfizz, sst-effects and setBfree, and the
+Arpeggiator) are released by tagging `vX.Y.Z` on the fork, whose CI publishes a GitHub release:
+one build file per platform, `licenses.tar.gz` and `oscairn-release.json`, the manifest
+([`schemas/plugin-release.schema.json`](schemas/plugin-release.schema.json)). Each plugin in it
+has a `kind`, `synth`, `effect` or `note-effect`, which says how `oscairn-plugin-check` plays it:
+neither the manifest's other fields nor a release record says so per plugin (a record's `tags`
+are the package's).
+
+`.github/workflows/import.yml`, run by hand (Actions, Import a release) with the release's
+address or its fork and tag, imports one through `scripts/import-release.py`:
+
+1. **verify** fetches the manifest and its files and checks the manifest against the schema, every
+   file's SHA-256 and size, that the source is one of Oscairn's forks and its tag is
+   `source.revision` there, each build's libraries, and that the license and license files are
+   the package's last release's (a difference fails, unless the run accepts a license change).
+   Libraries are read from the files here: a macOS build only `/usr/lib/` and `/System/` and no
+   `LC_RPATH`; a Linux build only Oscairn's
+   [Linux allowlist](https://github.com/oscairn/oscairn/blob/main/docs/plugin-porting.md#the-linux-allowlist),
+   no RPATH or RUNPATH, and no newer glibc or libstdc++ symbol version than the image's.
+2. **plugin-check** plays each plugin with `oscairn-plugin-check`, built at `OSCAIRN_COMMIT`, on
+   its platform's runner: `macos-15` for `macos-arm64`, `ubuntu-24.04-arm` for `linux-arm64`.
+   Another platform is another row in `PLATFORMS` in the script.
+3. **candidate** keeps the checked, unsigned candidate as the `unsigned-candidate` artifact: the
+   builds, the license files, `plan.json` and `sign.sh`, the commands that sign it.
+4. **sign**, only with the `OSCAIRN_PUBLISHER_KEY` secret, signs each build and the archive,
+   writes `packages/<id>/<version>.json` and `.olib`, runs the checks Check runs, and opens a
+   pull request. Without the key it does nothing, and the release is signed by hand:
+
+   ```sh
+   sh unsigned-candidate/sign.sh ~/oscairn/publisher.key oscairn-sign
+   python3 scripts/import-release.py record --candidate unsigned-candidate --oscairn-sign oscairn-sign
+   ```
+
+   then a pull request with the two files `record` writes. Nothing is ever merged by the
+   workflow.
+
+The script runs the same way on any machine (`python3 scripts/import-release.py --help`), and
+`scripts/test_import_release.py <oscairn-sign> [<oscairn-plugin-check>]` imports a release it
+makes from the Arpeggiator's last build, served from a local folder and signed with a throwaway
+key, and checks that a tampered hash, a changed license file and a build with an rpath are each
+refused. Check runs it.
+
+**Signing in CI is the owner's choice.** To make it, create the environment `publisher-signing`
+with required reviewers and deployments from `main` only, and put the publisher's whole key file
+in it as the environment secret `OSCAIRN_PUBLISHER_KEY`, never as a repository secret. Only the
+sign job's Sign step reads it, writing it to a file only it can read and removing it when the
+step ends; no job that sees it runs plugin code. A pull request opened with the job's own token
+starts no workflow, so Check would not run on it: give a fine-grained token with this
+repository's contents and pull requests as `OSCAIRN_PR_TOKEN` in the same environment, or close
+and reopen each such pull request.
+
 ### Keys
 
 - **The root key** is made offline and stays offline with the maintainers. It signs only the
