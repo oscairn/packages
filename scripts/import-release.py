@@ -2,11 +2,11 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Imports a plugin release from one of Oscairn's forks (README.md, "Importing a release").
 
-A fork's tag vX.Y.Z publishes a GitHub release holding oscairn-release.json (the manifest,
-schemas/plugin-release.schema.json), one build file per platform and licenses.tar.gz. Steps, each
-a command, as .github/workflows/import.yml runs them:
+A fork's tag vX.Y.Z or oscairn-vX.Y.Z publishes a GitHub release holding oscairn-release.json
+(the manifest, schemas/plugin-release.schema.json), one build file per platform and
+licenses.tar.gz. Steps, each a command, as .github/workflows/import.yml runs them:
 
-    import-release.py verify (--release <url> | --repo oscairn/<fork> --tag vX.Y.Z | --from <url>)
+    import-release.py verify (--release <url> | --repo oscairn/<fork> --tag [oscairn-]vX.Y.Z | --from <url>)
                              --out <candidate> [--packages .] [--accept-license-change]
         Fetches the manifest and its files into <candidate>, and checks: the manifest against the
         schema; every file's SHA-256 and size; the source is an allowed Oscairn fork and the tag is
@@ -303,13 +303,13 @@ def previous_license_files(path, record, temp):
 def where_from(args):
     """The release's download address, and the fork it is on (None for --from)."""
     if args.release:
-        m = re.fullmatch(r"https://github\.com/(oscairn/[A-Za-z0-9._-]+)/releases/tag/(v[0-9]+\.[0-9]+\.[0-9]+)", args.release)
+        m = re.fullmatch(r"https://github\.com/(oscairn/[A-Za-z0-9._-]+)/releases/tag/((?:oscairn-)?v[0-9]+\.[0-9]+\.[0-9]+)", args.release)
         if not m:
-            raise Refused(f"{args.release} is not https://github.com/oscairn/<fork>/releases/tag/vX.Y.Z")
+            raise Refused(f"{args.release} is not https://github.com/oscairn/<fork>/releases/tag/[oscairn-]vX.Y.Z")
         args.repo, args.tag = m.groups()
     if args.repo:
-        if not re.fullmatch(r"oscairn/[A-Za-z0-9._-]+", args.repo) or not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", args.tag or ""):
-            raise Refused("--repo is oscairn/<fork> and --tag vX.Y.Z")
+        if not re.fullmatch(r"oscairn/[A-Za-z0-9._-]+", args.repo) or not re.fullmatch(r"(?:oscairn-)?v[0-9]+\.[0-9]+\.[0-9]+", args.tag or ""):
+            raise Refused("--repo is oscairn/<fork> and --tag vX.Y.Z or oscairn-vX.Y.Z")
         return f"https://github.com/{args.repo}/releases/download/{args.tag}/", f"https://github.com/{args.repo}"
     if not args.from_:
         raise Refused("give --release, --repo and --tag, or --from")
@@ -370,8 +370,8 @@ def verify(args):
         problems.append(f"source.url {source['url']} is not one of Oscairn's forks: {sorted(FORKS)}")
     if fork and source["url"] != fork:
         problems.append(f"source.url {source['url']} is not {fork}, which holds the release")
-    if source["tag"] != "v" + package["version"] or (args.tag and source["tag"] != args.tag):
-        problems.append(f"source.tag {source['tag']} is not v{package['version']}" + (f" and {args.tag}" if args.tag else ""))
+    if source["tag"] not in ("v" + package["version"], "oscairn-v" + package["version"]) or (args.tag and source["tag"] != args.tag):
+        problems.append(f"source.tag {source['tag']} is not v{package['version']} or oscairn-v{package['version']}" + (f" and {args.tag}" if args.tag else ""))
     packages = Path(args.packages)
     if (packages / "packages" / package["id"] / f"{package['version']}.json").exists():
         problems.append(f"{package['id']} {package['version']} is here already: a version never changes once merged")
@@ -521,7 +521,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     steps = ap.add_subparsers(dest="step", required=True)
     v = steps.add_parser("verify")
-    v.add_argument("--release", help="https://github.com/oscairn/<fork>/releases/tag/vX.Y.Z")
+    v.add_argument("--release", help="https://github.com/oscairn/<fork>/releases/tag/[oscairn-]vX.Y.Z")
     v.add_argument("--repo", help="oscairn/<fork>, with --tag")
     v.add_argument("--tag")
     v.add_argument("--from", dest="from_", help="the release's files at another address (a test's local server)")

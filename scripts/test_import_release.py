@@ -10,7 +10,8 @@ plugin-check (when given the tool, on a Mac), sign with a throwaway key made her
 import-release.py sign and by the candidate's sign.sh, and record; the archive must pass
 `oscairn-sign verify` and build-index.py --check. Then a tampered hash, a changed license file,
 a macOS build with an LC_RPATH, a Linux build with a RUNPATH and too new a glibc, and a tag that
-is not the manifest's revision are each refused. The key lives only in a temporary folder.
+is not the manifest's revision are each refused, as is a tag not vX.Y.Z or oscairn-vX.Y.Z of the
+package's version. The key lives only in a temporary folder.
 """
 import functools
 import hashlib
@@ -80,11 +81,12 @@ def main(tool, plugin_check=None):
             bundle = z.read(next(n for n in names if n.endswith("/macos-arm64/oscairn-arpeggiator.clap")))
             licenses = {n[len("Licenses/"):]: z.read(n) for n in names if n.startswith("Licenses/")}
 
-        # The fork: a git repository with the release's tag, annotated.
+        # The fork: a git repository with the release's tag, annotated, in both forms.
         fork = temp / "git" / "oscairn" / "arpeggiator"
         fork.mkdir(parents=True)
         for command in (["init", "-q"], ["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "release"],
-                        ["-c", "user.name=t", "-c", "user.email=t@example.com", "tag", "-a", "-m", "v0.1.5", "v0.1.5"]):
+                        ["-c", "user.name=t", "-c", "user.email=t@example.com", "tag", "-a", "-m", "v0.1.5", "v0.1.5"],
+                        ["-c", "user.name=t", "-c", "user.email=t@example.com", "tag", "-a", "-m", "oscairn-v0.1.5", "oscairn-v0.1.5"]):
             assert run("git", "-C", fork, *command).returncode == 0
         revision = run("git", "-C", fork, "rev-parse", "HEAD").stdout.strip()
 
@@ -210,6 +212,22 @@ def main(tool, plugin_check=None):
         release(change=lambda m: m["source"].update(revision="1" * 40))
         _, result = verify()
         check(result.returncode == 1 and "not source.revision" in result.stderr, "a tag that is not the revision is refused: " + result.stderr)
+
+        release(change=lambda m: m["source"].update(tag="oscairn-v0.1.5"))
+        _, result = verify()
+        check(result.returncode == 0, "an oscairn-vX.Y.Z tag verifies: " + result.stdout + result.stderr)
+        release(change=lambda m: m["source"].update(tag="oscairn-v0.1.6"))
+        _, result = verify()
+        check(result.returncode == 1 and "source.tag oscairn-v0.1.6 is not v0.1.5 or oscairn-v0.1.5" in result.stderr,
+              "an oscairn-vX.Y.Z tag of another version is refused: " + result.stderr)
+        for tag in ("oscairn-0.1.5", "xoscairn-v0.1.5"):
+            release(change=lambda m: m["source"].update(tag=tag))
+            _, result = verify()
+            check(result.returncode == 1 and "source.tag does not match" in result.stderr, f"a {tag} tag is refused: " + result.stderr)
+            result = run(sys.executable, "-I", SCRIPT, "verify", "--repo", "oscairn/arpeggiator", "--tag", tag, "--out", temp / "unused")
+            check(result.returncode == 1 and "--tag vX.Y.Z or oscairn-vX.Y.Z" in result.stderr, f"--tag {tag} is refused: " + result.stderr)
+            result = run(sys.executable, "-I", SCRIPT, "verify", "--release", f"https://github.com/oscairn/arpeggiator/releases/tag/{tag}", "--out", temp / "unused")
+            check(result.returncode == 1 and "is not https://github.com/oscairn/<fork>/releases/tag/" in result.stderr, f"a release at {tag} is refused: " + result.stderr)
         server.shutdown()
     finally:
         shutil.rmtree(temp, ignore_errors=True)
