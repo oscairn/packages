@@ -9,13 +9,13 @@ on:
   workflow_dispatch:
     inputs:
       release:
-        description: "The release, https://github.com/oscairn/<fork>/releases/tag/vX.Y.Z (or give the fork and tag below)"
+        description: "The release, https://github.com/oscairn/<fork>/releases/tag/vX.Y.Z or oscairn-vX.Y.Z (or give the fork and tag below)"
         required: false
       repo:
         description: "The fork, oscairn/<fork>"
         required: false
       tag:
-        description: "Its tag, vX.Y.Z"
+        description: "Its tag, vX.Y.Z or oscairn-vX.Y.Z"
         required: false
       accept-license-change:
         description: "Accept a license or license files other than the package's last release's"

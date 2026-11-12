@@ -162,8 +162,8 @@ review from Code Owners.
 ### Importing a release
 
 Oscairn's own plugins (its forks of Dexed, Surge, sfizz, sst-effects and setBfree, and the
-Arpeggiator) are released by tagging `vX.Y.Z` on the fork, whose CI publishes a GitHub release:
-one build file per platform, `licenses.tar.gz` and `oscairn-release.json`, the manifest
+Arpeggiator) are released by tagging `vX.Y.Z` or `oscairn-vX.Y.Z` on the fork, whose CI publishes
+a GitHub release: one build file per platform, `licenses.tar.gz` and `oscairn-release.json`, the manifest
 ([`schemas/plugin-release.schema.json`](schemas/plugin-release.schema.json)). Each plugin in it
 has a `kind`, `synth`, `effect` or `note-effect`, which says how `oscairn-plugin-check` plays it:
 neither the manifest's other fields nor a release record says so per plugin (a record's `tags`
