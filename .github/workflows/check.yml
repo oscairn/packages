@@ -10,7 +10,7 @@ permissions:
 
 env:
   OSCAIRN_REPOSITORY: oscairn/oscairn # the Oscairn source repository
-  OSCAIRN_COMMIT: "c3994a32acbc148aa62d5a71b5ffb86bbd4c1463" # a full commit of it that has `oscairn-sign file`, license and source, asset packages, per-plugin versions, package dependencies, the glibc and libstdc++ ceiling, and revocation lists
+  OSCAIRN_COMMIT: "39c24f3a4778fbc9620d36de10d94004ee9daf97" # a full commit of it that has `oscairn-sign file`, license and source, asset packages, per-plugin versions, package dependencies, the glibc and libstdc++ ceiling, and revocation lists
 
 jobs:
   check:
