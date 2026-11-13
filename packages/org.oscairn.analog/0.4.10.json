@@ -1,0 +1,36 @@
+{
+  "format": "oscairn.repository-release",
+  "version": 1,
+  "id": "org.oscairn.analog",
+  "release": "0.4.10",
+  "publisher": "org.oscairn",
+  "summary": "Analog synthesizer based on Surge XT, with Oscairn sound contexts, snapshots, voice budget and instance sharing; factory patches from org.oscairn.analog-factory.",
+  "license": "GPL-3.0-or-later AND MIT AND Apache-2.0 AND (BSD-3-Clause OR GPL-2.0-only) AND 0BSD AND Zlib AND blessing AND ISC AND LicenseRef-FFTPACK AND LicenseRef-Ooura-FFT",
+  "tags": [
+    "instrument",
+    "synthesizer"
+  ],
+  "channel": "stable",
+  "platforms": [
+    "linux-arm64",
+    "macos-arm64"
+  ],
+  "source": {
+    "url": "https://github.com/oscairn/surge",
+    "revision": "55b59c0bbe3ee5a77e9f6f17b71c929aea9a27ae"
+  },
+  "dependencies": {
+    "assets": [
+      {
+        "id": "org.oscairn.analog-factory",
+        "version": "1.0.0"
+      }
+    ]
+  },
+  "archive": {
+    "path": "0.4.10.olib",
+    "sha256": "10e5d78dd88d097e5e0194459d66b113e452f108f7158674592a3146889fa5d4",
+    "size": 6103105
+  },
+  "yanked": null
+}
