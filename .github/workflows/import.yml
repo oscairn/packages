@@ -30,7 +30,7 @@ concurrency:
 
 env:
   OSCAIRN_REPOSITORY: oscairn/oscairn # the Oscairn source repository
-  OSCAIRN_COMMIT: "39c24f3a4778fbc9620d36de10d94004ee9daf97" # as check.yml's; a full commit of it that has oscairn-plugin-check playing note effects
+  OSCAIRN_COMMIT: "6165e90fc3cdf3684ff9b6fb8824a72400929172" # as check.yml's; a full commit of it that has oscairn-plugin-check playing note effects
 
 jobs:
   verify:
