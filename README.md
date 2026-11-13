@@ -6,6 +6,26 @@ A pull request is a submission. GitHub Actions checks it, and on merge builds an
 puts package files in this repository's releases and the signed index on GitHub Pages. There is
 no server.
 
+## Downloading a package by hand
+
+Each version of each package has a ready-made archive per platform, to download in a browser and
+install from Oscairn's Library (Install..., File), or to carry to a device with no network:
+
+```
+https://packages.oscairn.org/exports/<package ID>/<version>/<package ID>-<version>-<platform>.olib
+```
+
+such as `https://packages.oscairn.org/exports/com.example.organ/2.1.0/com.example.organ-2.1.0-macos-arm64.olib`,
+the platform one of `linux-arm64`, `linux-x86_64`, `macos-arm64`, `macos-x86_64` and
+`windows-x86_64`. A package with no plugin builds (a library of Sounds, an asset library) has one,
+`<package ID>-<version>.olib`. That address is a page that sends the browser on to the file, a
+release asset of this repository (`exports-<package ID>`); link to the address, not to the asset,
+so the link survives a move of the hosting. It holds the release's own manifest and signature,
+what every platform shares and that platform's builds, and installs with every check an archive
+gets. There is none for a version over 1,900 MiB, a withdrawn one, or a platform whose build was
+revoked; the Catalog offers only those that exist. Devices never need them: they fetch each
+release in pieces.
+
 ## Submitting a package
 
 You need `oscairn-sign`, built with Oscairn (`cmake --build build --target oscairn-sign`).
@@ -66,6 +86,14 @@ You need `oscairn-sign`, built with Oscairn (`cmake --build build --target oscai
      (your own release page, for example), or the archive itself beside it as
      `packages/<package ID>/<version>.olib` if it is under 100 MiB, which is the largest file
      GitHub accepts in a repository.
+
+   The archive is the whole release, signed once: every platform's builds in one archive. On
+   merge, publishing splits it into pieces (its manifest, each item, large samples, and each
+   platform's builds; RFC 0031, "Pieces: the format"), so a device downloads what all platforms
+   share and its own platform's builds only, and assembles from the pieces the
+   [ready-made archives](#downloading-a-package-by-hand). Nothing is signed again: an archive
+   made for one device carries your manifest and signature unchanged. Such an archive (one that
+   leaves out builds its manifest lists) is not a submission.
 
 The checks report on the pull request. A maintainer reviews a publisher's first submission and
 any package that newly brings plugin or app code; other submissions are merged once the checks
@@ -153,8 +181,10 @@ The format, as devices read it ([RFC 0031](https://github.com/oscairn/oscairn/bl
   replaced; a device refuses a root whose own list revokes its root key or the index key that
   signed it.
 - `versions`: package versions withdrawn (`id` and `version`), in this repository only.
-- `builds`: plugin builds revoked by their digest, as the archive's manifest lists it; an
-  archive holding one is never installed (from any repository, when this is the official one).
+- `builds`: plugin builds revoked by their digest, as the archive's manifest lists it. Only its
+  own platform is affected: a device on that platform never installs it (from any repository,
+  when this is the official one), that platform's ready-made archive is no longer made, and the
+  other platforms keep the version.
 - Every entry has a non-empty `reason`, shown to users, and the `date` it was decided
   (`YYYY-MM-DD`). All three lists are present, empty when there is nothing in them.
 
@@ -168,7 +198,10 @@ shows a withdrawn version as "withdrawn by <repository>: <reason>" and never off
 already installed (its version withdrawn, or signed by a revoked key) is reported to its user
 with the reason, with Update when a newer version exists and how to remove it; it is never
 deleted or disabled, and nothing interrupts. Devices do not record build digests of what is
-installed, so a revoked build already installed is not reported.
+installed, so a revoked build already installed is not reported. An archive installed from a file
+(a ready-made archive, say) is checked against the list each repository a device has on gave it
+last, with no network. A withdrawn version's ready-made archives, and a revoked build's
+platform's, are removed from the releases at the next publish.
 
 **Adding an entry.** Open a pull request that adds the entry to `revoked.json` with its reason
 and today's date; `CODEOWNERS` requires a maintainer's review. The check runs
@@ -206,7 +239,10 @@ library from outside the system and its bundle (a Homebrew library, say), that t
 `license`, `source` and `dependencies` are the archive's, that each asset library a release
 needs is here at that version or later, that a package keeps the
 publisher of its other releases and that publisher IDs do not nest, and no published version or
-publisher key changed. Each check RFC 0031 lists that is not built yet is its own step that says
+publisher key changed. It splits each release into pieces and assembles each ready-made archive
+from them, checking each with `oscairn-sign verify --platform`, as publishing does; publish then
+uploads new pieces to the `blobs-<ab>` releases and the archives to `exports-<package ID>`, and
+removes archives no longer made. Each check RFC 0031 lists that is not built yet is its own step that says
 so with a warning. Changes outside `publishers/`, `packages/` and `revoked.json` need a
 maintainer's review: a pull request can change the workflows it runs under, so `CODEOWNERS`
 requires a maintainer for `.github/`, `scripts/`, `revoked.json`, `repository-config.json` and
@@ -295,3 +331,8 @@ new `index.key`; add the old one to `revoked.json`'s `keys`.
 
 See RFC 0031, "Hosting and cost". Protect `main`: pull requests only, with review from Code
 Owners required, the Check workflow required, and no force pushes.
+
+In `repository-config.json`, `blobBase` is where the pieces are (`<blobBase><ab>/<sha256>`, the
+`blobs-<ab>` releases) and `exportDownload` where the ready-made archives are
+(`<exportDownload><package ID>/<file>`, the `exports-<package ID>` releases); without
+`exportDownload` none is made, and each version says so (`noExport`).

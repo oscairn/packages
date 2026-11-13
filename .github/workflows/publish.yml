@@ -1,6 +1,8 @@
 # Publishes the repository on every merge (RFC 0031, "Submitting, with no server"): builds the
-# index, signs the root with the index key, uploads new package files as release assets, and
-# deploys the signed index to GitHub Pages. Merges publish one at a time.
+# index, splitting each release into pieces, signs the root with the index key, uploads new
+# pieces as release assets and the ready-made archives per platform as release assets of their
+# own, and deploys the signed index and the archives' pages to GitHub Pages. Merges publish one
+# at a time.
 name: Publish
 
 on:
@@ -72,7 +74,7 @@ jobs:
           repository: ${{ env.OSCAIRN_REPOSITORY }}
           commit: ${{ env.OSCAIRN_COMMIT }}
 
-      - name: Restore fetched archives
+      - name: Restore fetched archives and their pieces
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/cache
@@ -95,10 +97,12 @@ jobs:
           if [[ "$index" =~ ^index/[0-9a-f]{64}\.json\.gz$ ]]; then curl -fsSL "${site%/}/$index" -o ".published/$index" || true; fi
 
       - name: Build the index
+        # Splits each release into pieces in the cache and assembles the ready-made archives from
+        # them into $RUNNER_TEMP/exports (RFC 0031).
         run: >
           python3 -I scripts/build-index.py
           --oscairn-sign "${{ steps.tools.outputs.path }}"
-          --cache "$RUNNER_TEMP/cache" --out site
+          --cache "$RUNNER_TEMP/cache" --out site --exports "$RUNNER_TEMP/exports"
           --previous .previous --previous-site .published
           --serial "$(git rev-list --count HEAD)"
 
@@ -136,6 +140,37 @@ jobs:
             gh release upload "$tag" "$RUNNER_TEMP/cache/$sha"
           done < site/blobs.txt
           rm site/blobs.txt
+
+      - name: Upload the ready-made archives, and remove those no longer made
+        # One release per package, exports-<package ID>, each asset a ready-made archive named
+        # <package ID>-<version>-<platform>.olib (or <package ID>-<version>.olib), which the page at
+        # exports/<package ID>/<version>/<file>/ on the Pages site sends a browser on to. They are
+        # derived from the pieces, so one there already is kept. One no longer made (a withdrawn
+        # version, a revoked key's package, a revoked build's platform) is removed. A release holds
+        # at most 1000 assets: versions times platforms, per package.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          while read -r id file; do
+            tag="exports-$id"
+            if ! gh release view "$tag" > /dev/null 2>&1; then
+              gh release create "$tag" --title "$tag" --notes "Ready-made archives of $id, one per version and platform, made from the published pieces (RFC 0031). Do not edit by hand."
+            fi
+            if gh release view "$tag" --json assets --jq '.assets[].name' | grep -qxF "$file"; then
+              continue
+            fi
+            gh release upload "$tag" "$RUNNER_TEMP/exports/$file"
+          done < site/exports.txt
+          gh release list --limit 1000 --json tagName --jq '.[].tagName | select(startswith("exports-"))' |
+            while read -r tag; do
+              gh release view "$tag" --json assets --jq '.assets[].name' |
+                while read -r file; do
+                  if ! grep -qxF "${tag#exports-} $file" site/exports.txt; then
+                    gh release delete-asset "$tag" "$file" --yes
+                  fi
+                done
+            done
+          rm site/exports.txt
 
       - name: Report release downloads
         # GitHub may throttle file hosting that uses far more bandwidth than similar users;
