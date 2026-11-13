@@ -10,7 +10,7 @@ permissions:
 
 env:
   OSCAIRN_REPOSITORY: oscairn/oscairn # the Oscairn source repository
-  OSCAIRN_COMMIT: "37bb3315621d85303bf80c8e5647f3b4e3ce9cee" # a full commit of it that has `oscairn-sign file`, license and source, asset packages, per-plugin versions, and package dependencies
+  OSCAIRN_COMMIT: "c3994a32acbc148aa62d5a71b5ffb86bbd4c1463" # a full commit of it that has `oscairn-sign file`, license and source, asset packages, per-plugin versions, package dependencies, the glibc and libstdc++ ceiling, and revocation lists
 
 jobs:
   check:
@@ -55,6 +55,11 @@ jobs:
         # scripts/import-release.py end to end on a release it makes from the Arpeggiator's last
         # build, and its refusals; this pull request's own script, since it checks no submission.
         run: python3 -I scripts/test_import_release.py "${{ steps.tools.outputs.path }}"
+
+      - name: The revocation list's checks
+        # scripts/build-index.py's reading of revoked.json on a sample repository: valid lists
+        # pass, each malformed one is refused naming the entry; this pull request's own scripts.
+        run: python3 -I scripts/test_revocations.py "${{ steps.tools.outputs.path }}"
 
       - name: Publisher verification (not built yet)
         run: echo "::warning::Not built yet. Will fetch each new publisher's verification address and check that it names the publisher's key. A maintainer checks it by hand until then."
