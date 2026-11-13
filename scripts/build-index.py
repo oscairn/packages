@@ -4,8 +4,9 @@
 
 Checks every release on the way: the records' schema, each archive's hash, archive safety and
 every signature (through `oscairn-sign verify`), the publisher's key, the platform builds each
-release claims, and that no build loads libraries from outside the system and its bundle. With --previous, also that no published release changed. Writes the
-repository's static tree to --out:
+release claims, and that no build loads libraries from outside the system and its bundle. With --previous, also that no published release changed. Checks
+revoked.json at least as strictly as a device reads it, since a list a device refuses takes the
+whole repository off every device. Writes the repository's static tree to --out:
 
     repository.json            the root, unsigned: sign it with `oscairn-sign file`
     index/<sha256>.json.gz     the index
@@ -16,6 +17,7 @@ repository's static tree to --out:
 Standard library only. Exits 1 and lists every problem when anything is wrong.
 """
 import argparse
+import datetime
 import gzip
 import hashlib
 import json
@@ -35,6 +37,10 @@ ID = re.compile(r"^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)+$")  # reverse-DNS
 VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.+_-]{0,63}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 HEX128 = re.compile(r"^[0-9a-f]{128}$")
+DATE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+MAX_TEXT = 4096  # bytes; a device refuses longer text
+# Each revocation list and the fields of its entries, beside `reason` and `date`, with their shapes.
+REVOCATIONS = {"keys": {"key": HEX64}, "versions": {"id": ID, "version": VERSION}, "builds": {"sha256": HEX64}}
 
 
 class Problems(list):
@@ -311,6 +317,98 @@ def unchanged(previous, root, problems):
             problems.add(new_path, "a publisher's key changed or was removed; key replacement is not built yet")
 
 
+def read_revocations(path, config, problems):
+    """revoked.json, or None when anything in it is wrong. A device (core/control/src/repository.cpp,
+    revocations()) refuses the whole repository over a list it cannot read: the format and version
+    1, all three lists, each entry an object with its fields as text of at most 4096 bytes, a
+    non-empty reason, a YYYY-MM-DD date, keys and digests 64 lowercase hex digits. This is
+    stricter: no unknown or repeated member (a device reads the first of a repeated one, Python
+    the last), no repeated entry, ID and version shapes as in a release, real dates, a version
+    that is the number 1 (Python takes true and 1.0 for 1, which a device refuses), and no
+    revoking this repository's own root or index key, which makes devices refuse the root."""
+    where, before = "revoked.json", len(problems)
+
+    def members(pairs):
+        names = [name for name, _ in pairs]
+        repeated = sorted({name for name in names if names.count(name) > 1})
+        if repeated:
+            raise ValueError(f"a member is named twice: {', '.join(repeated)}")
+        return dict(pairs)
+
+    def constant(name):
+        raise ValueError(f"{name} is not JSON")
+
+    try:
+        data = path.read_bytes()
+        if len(data) > MAX_RECORD:
+            raise ValueError("over 1 MiB")
+        revoked = json.loads(data.decode("utf-8"), object_pairs_hook=members, parse_constant=constant)
+        if not isinstance(revoked, dict):
+            raise ValueError("not a JSON object")
+    except (OSError, ValueError) as e:
+        problems.add(where, f"cannot be read: {e}")
+        return None
+    if revoked.get("format") != "oscairn.repository-revocations" or type(revoked.get("version")) is not int or revoked["version"] != 1:
+        problems.add(where, "not format oscairn.repository-revocations, version 1")
+    for name in sorted(set(revoked) - {"format", "version", *REVOCATIONS}):
+        problems.add(where, f"unknown member `{name}`")
+    own = {config.get("rootKey"): "root key", config.get("indexKey", {}).get("key") if isinstance(config.get("indexKey"), dict) else None: "index key"}
+    for list_name, fields in REVOCATIONS.items():
+        entries = revoked.get(list_name)
+        if not isinstance(entries, list):
+            problems.add(where, f"`{list_name}` is missing or not a list (all three lists are present, empty when nothing is in them)")
+            continue
+        seen = {}
+        for n, entry in enumerate(entries):
+            at = f"{where}: {list_name}[{n}]"
+            if not isinstance(entry, dict):
+                problems.add(at, "not an object")
+                continue
+            for name in sorted(set(entry) - set(fields) - {"reason", "date"}):
+                problems.add(at, f"unknown field `{name}`")
+            ok = True
+            for name, shape in {**fields, "reason": None, "date": DATE}.items():
+                value = entry.get(name)
+                try:
+                    size = len(value.encode("utf-8")) if isinstance(value, str) else 0
+                except UnicodeEncodeError:  # a lone surrogate, as \ud800
+                    size = -1
+                if name not in entry:
+                    problems.add(at, f"`{name}` is missing")
+                elif not isinstance(value, str) or size < 0:
+                    problems.add(at, f"`{name}` is not text")
+                elif value.strip() == "":
+                    problems.add(at, f"`{name}` is empty")
+                elif size > MAX_TEXT:
+                    problems.add(at, f"`{name}` is over {MAX_TEXT} bytes")
+                elif shape is HEX64 and not HEX64.match(value):
+                    problems.add(at, f"`{name}` is not 64 lowercase hex digits: {value!r}")
+                elif shape is DATE and not (DATE.match(value) and valid_date(value)):
+                    problems.add(at, f"`date` is not a real date as YYYY-MM-DD: {value!r}")
+                elif shape is not None and not shape.match(value):
+                    problems.add(at, f"`{name}` is malformed: {value!r}")
+                else:
+                    continue
+                ok = False
+            if not ok:
+                continue
+            what = tuple(entry[name] for name in fields)
+            if what in seen:
+                problems.add(at, f"repeats {list_name}[{seen[what]}] ({' '.join(what)})")
+            seen.setdefault(what, n)
+            if list_name == "keys" and entry["key"] in own:
+                problems.add(at, f"revokes this repository's own {own[entry['key']]}: every device would refuse the repository")
+    return revoked if len(problems) == before else None
+
+
+def valid_date(value):
+    try:
+        datetime.date.fromisoformat(value)
+        return True
+    except ValueError:
+        return False
+
+
 def check_delegation(config, tool, problems):
     """The root key's signature over the index key: oscairn-index-1\\0, the key's hex and a newline."""
     root_key, index = config.get("rootKey", ""), config.get("indexKey", {})
@@ -412,11 +510,26 @@ def main():
                 if not any(version_key(x["release"]) >= version_key(need.get("version", "")) for x in have):
                     problems.add(f"packages/{pid}/{r['release']}.json", f"needs the asset library {need.get('id')} {need.get('version')} or later, which this repository does not have")
 
-    revoked = load(root / "revoked.json", problems)
-    if revoked is not None and check_format(revoked, "oscairn.repository-revocations", "revoked.json", problems):
-        for field in ("keys", "builds", "versions"):
-            if not isinstance(revoked.get(field), list) or not all(isinstance(e, dict) and isinstance(e.get("reason"), str) for e in revoked[field]):
-                problems.add("revoked.json", f"`{field}` is not a list of entries, each with a `reason`")
+    revoked = read_revocations(root / "revoked.json", config, problems)
+    if revoked is not None:
+        releases = [r for rs in packages.values() for r, _ in rs]
+        # A revoked publisher key: devices list every version it signed as withdrawn (by the
+        # index's publisher key ID) and never install one, and report installed copies. So its
+        # published releases stay listed, which is how devices say why; a release not yet
+        # published (not in --previous; every release without it) is refused.
+        revoked_keys = {e["key"]: n for n, e in enumerate(revoked["keys"])}
+        for pid, publisher in sorted(publishers.items()):
+            n = revoked_keys.get(publisher["key"])
+            if n is None:
+                continue
+            for r in releases:
+                if r["publisher"] == pid and not (args.previous and (args.previous / "packages" / r["id"] / f"{r['release']}.json").is_file()):
+                    problems.add(f"packages/{r['id']}/{r['release']}.json", f"its publisher's key is revoked (revoked.json: keys[{n}]); no new release signed by it is accepted")
+            print(f"note: publishers/{pid}.json: its key is revoked (revoked.json: keys[{n}]); its published releases stay listed, and devices show them withdrawn and never install them", file=sys.stderr)
+        published = {(r["id"], r["release"]) for r in releases}
+        for n, e in enumerate(revoked["versions"]):
+            if (e["id"], e["version"]) not in published:
+                print(f"warning: revoked.json: versions[{n}]: {e['id']} {e['version']} is not a release in this repository", file=sys.stderr)
 
     if problems:
         print("\n".join(problems), file=sys.stderr)

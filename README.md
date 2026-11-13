@@ -133,8 +133,66 @@ publisher's ID:
 
 ### Revocations
 
-`revoked.json` lists revoked publisher keys, plugin build digests and package versions, each
-with a `reason`. Maintainers change it, following the takedown policy.
+`revoked.json` lists revoked publisher keys, plugin build digests and withdrawn package versions,
+each with a `reason` and a `date`. Maintainers change it, following the takedown policy (below).
+The format, as devices read it ([RFC 0031](https://github.com/oscairn/oscairn/blob/main/docs/rfcs/0031-package-repository-and-distribution.md#the-revocation-list)):
+
+```json
+{
+  "format": "oscairn.repository-revocations",
+  "version": 1,
+  "keys": [{"key": "<64 hex digits>", "reason": "Its private key was published", "date": "2026-11-11"}],
+  "versions": [{"id": "com.example.organ", "version": "2.1.0", "reason": "Its build deletes user files", "date": "2026-11-11"}],
+  "builds": [{"sha256": "<64 hex digits>", "reason": "Malware found by a scanner", "date": "2026-11-11"}]
+}
+```
+
+- `keys`: publisher keys revoked, each a whole public key (not its 16-digit ID). Every package
+  the key signed is withdrawn on devices: from this repository's listing, and from every
+  repository's when this is the official one. An old index key goes here too when it is
+  replaced; a device refuses a root whose own list revokes its root key or the index key that
+  signed it.
+- `versions`: package versions withdrawn (`id` and `version`), in this repository only.
+- `builds`: plugin builds revoked by their digest, as the archive's manifest lists it; an
+  archive holding one is never installed (from any repository, when this is the official one).
+- Every entry has a non-empty `reason`, shown to users, and the `date` it was decided
+  (`YYYY-MM-DD`). All three lists are present, empty when there is nothing in them.
+
+**Withdrawn is not yanked.** A yanked version is the publisher's advice, set in its release
+record: it is not offered, but a Performance whose lock names it still gets it. A withdrawn
+version (by `versions`, a revoked key or a revoked build) is the maintainers' decision: it is
+never offered or installed, even when named.
+
+**What devices do.** A device reads the list with the signed root on every refresh. The Catalog
+shows a withdrawn version as "withdrawn by <repository>: <reason>" and never offers it. A copy
+already installed (its version withdrawn, or signed by a revoked key) is reported to its user
+with the reason, with Update when a newer version exists and how to remove it; it is never
+deleted or disabled, and nothing interrupts. Devices do not record build digests of what is
+installed, so a revoked build already installed is not reported.
+
+**Adding an entry.** Open a pull request that adds the entry to `revoked.json` with its reason
+and today's date; `CODEOWNERS` requires a maintainer's review. The check runs
+`scripts/build-index.py`, which refuses a list a device could not read, and more: a list
+missing, an entry without its fields or with an unknown one, a key or digest not 64 lowercase
+hex digits, a package ID or version not shaped as a release's, a date that is not a real
+`YYYY-MM-DD` day, an empty reason, a repeated entry or member, text over 4096 bytes, and an
+entry revoking this repository's own root key or current index key. Each problem names the entry
+(`revoked.json: keys[0]: ...`). A withdrawn version that names no release here is a warning, not
+a refusal. When a key in `publishers/` is revoked, the releases it signed that are already
+published stay listed, so devices can say why they are withdrawn, and a new release signed by it
+is refused. On merge, publish puts the list in the signed root.
+
+The index builder publishes the file as `revocations/<sha256>.json`, named in the signed root by
+its path, SHA-256 and size, so the index key's signature over the root covers it and it comes
+with the root's serial: no older list can be served without its older root, which devices
+refuse. A root without one, or with one a device cannot read, makes that repository unusable on
+devices until fixed.
+
+**Takedown policy.**
+
+> **TODO (owner): not written yet.** Who decides a takedown, how to report a package (for
+> safety, or for rights), and how a publisher appeals. Until it is written, no takedown process is
+> published.
 
 ## For maintainers
 
