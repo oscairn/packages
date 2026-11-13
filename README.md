@@ -71,7 +71,7 @@ The checks report on the pull request. A maintainer reviews a publisher's first 
 any package that newly brings plugin or app code; other submissions are merged once the checks
 pass.
 
-**A version never changes once merged.** Publish a fix as a new version. To withdraw one, set its
+**A version never changes once merged.** Publish a fix as a new version. To yank one, set its
 `yanked` to a reason: it is no longer offered, but Performances that use it still get it.
 
 ## The layout
