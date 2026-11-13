@@ -53,7 +53,8 @@ PLATFORMS = {
 # Oscairn's Linux allowlist (oscairn docs/plugin-porting.md, "The Linux allowlist"): what every
 # image carries, and the newest glibc and libstdc++ symbol versions every image has.
 LINUX_LIBRARIES = {
-    "libc.so.6", "libm.so.6", "libdl.so.2", "libpthread.so.0", "librt.so.1", "ld-linux-aarch64.so.1", "ld-linux-x86-64.so.2",
+    "libc.so.6", "libm.so.6", "libmvec.so.1", "libdl.so.2", "libpthread.so.0", "librt.so.1", "ld-linux-aarch64.so.1",
+    "ld-linux-x86-64.so.2",
     "libgcc_s.so.1", "libstdc++.so.6", "libasound.so.2", "libX11.so.6", "libXext.so.6", "libXrandr.so.2", "libXinerama.so.1",
     "libXcursor.so.1", "libXrender.so.1", "libfreetype.so.6", "libfontconfig.so.1",
 }
