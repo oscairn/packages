@@ -6,13 +6,19 @@ Checks every release on the way: the records' schema, each archive's hash, archi
 every signature (through `oscairn-sign verify`), the publisher's key, the platform builds each
 release claims, and that no build loads libraries from outside the system and its bundle. With --previous, also that no published release changed. Checks
 revoked.json at least as strictly as a device reads it, since a list a device refuses takes the
-whole repository off every device. Writes the repository's static tree to --out:
+whole repository off every device. Splits each release into pieces (RFC 0031, "Pieces: the
+format"), and assembles from the pieces a ready-made archive per platform of each version, each
+checked with `oscairn-sign verify`. Writes the repository's static tree to --out:
 
     repository.json            the root, unsigned: sign it with `oscairn-sign file`
     index/<sha256>.json.gz     the index
     index/<sha256>.delta.gz    with --previous-site, the change from the index published last
     revocations/<sha256>.json  the revocation list
-    blobs.txt                  the SHA-256 of every archive, each in --cache under that name
+    exports/<id>/<version>/<file>/index.html
+                               each ready-made archive's stable address, a page sending the
+                               browser on to <exportDownload><id>/<file>
+    blobs.txt                  the SHA-256 of every piece and pieces list, each in --cache under that name
+    exports.txt                "<package ID> <file>" for each ready-made archive, in --exports
 
 Standard library only. Exits 1 and lists every problem when anything is wrong.
 """
@@ -20,6 +26,7 @@ import argparse
 import datetime
 import gzip
 import hashlib
+import html
 import json
 import re
 import shutil
@@ -32,6 +39,7 @@ from pathlib import Path
 
 MAX_ARCHIVE = 1900 * 2**20  # GitHub release assets must be under 2 GiB; headroom below it
 MAX_RECORD = 1 << 20
+MIN_SAMPLE = 1 << 20  # a file under Assets/ this large is a piece of its own, kept as itself
 PLATFORMS = {"linux-arm64", "linux-x86_64", "macos-arm64", "macos-x86_64", "windows-x86_64"}
 ID = re.compile(r"^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)+$")  # reverse-DNS
 VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.+_-]{0,63}$")
@@ -160,41 +168,37 @@ def fetch(record, record_path, cache, problems):
         return None
 
 
-def verify(tool, archive, where, problems):
+def verify(tool, archive, where, problems, platform=None):
     """`oscairn-sign verify`: archive safety, every hash and every signature, and each build's
-    libraries from outside the system and its bundle. Its report, or None."""
+    libraries from outside the system and its bundle; with a platform, that its builds are there.
+    Its report, or None."""
     try:
-        run = subprocess.run([tool, "verify", str(archive)], capture_output=True, text=True, timeout=900)
+        run = subprocess.run([tool, "verify", *(["--platform", platform] if platform else []), str(archive)], capture_output=True, text=True, timeout=900)
     except (OSError, subprocess.TimeoutExpired) as e:
         problems.add(where, f"oscairn-sign verify did not run: {e}")
         return None
     if run.returncode != 0:
         problems.add(where, f"the archive is refused: {run.stderr.strip()}")
         return None
-    report = {"archive": None, "builds": [], "outside": []}
+    report = {"archive": None, "builds": [], "outside": [], "absent": []}
     for line in run.stdout.splitlines():
         words = line.split()
         if words[:1] == ["archive"] and len(words) == 3:
             report["archive"] = (words[1], words[2])
         elif words[:1] == ["build"] and len(words) == 6:
             report["builds"].append((words[1], words[2], words[3], words[4], words[5].split(",")))
+        elif words[:1] == ["absent"] and len(words) == 5:
+            report["absent"].append(words[1:])  # format, ID, version, platform
         elif words[:1] == ["outside"] and len(words) >= 6:
             report["outside"].append(line.split(None, 5)[1:])  # format, ID, version, platform, what
     return report
 
 
 def facts(archive):
-    """What the index says of an archive: its manifest's hash and size, types and sizes."""
+    """What the index says of an archive besides its pieces: its manifest, the manifest's hash and size, and its types."""
     with zipfile.ZipFile(archive) as z:  # only after oscairn-sign verify accepted it
         manifest_bytes = z.read("library.json")
-        manifest = json.loads(manifest_bytes)
-        build_paths = {b["path"]: b["platform"] for p in manifest["plugins"] for b in p["builds"]}
-        platforms, common = {}, {"size": 0, "installed": 0}
-        for info in z.infolist():
-            platform = next((pl for path, pl in build_paths.items() if info.filename == path or info.filename.startswith(path + "/")), None)
-            sizes = platforms.setdefault(platform, {"size": 0, "installed": 0}) if platform else common
-            sizes["size"] += info.compress_size
-            sizes["installed"] += info.file_size
+    manifest = json.loads(manifest_bytes)
     types = {}
     for item in manifest["items"]:
         kind = "oscairn." + item["kind"]
@@ -203,7 +207,92 @@ def facts(archive):
         types[plugin["format"]] = types.get(plugin["format"], 0) + 1
     if manifest["kind"] == "asset":
         types["oscairn.asset"] = 1
-    return manifest, {"sha256": sha256(manifest_bytes), "size": len(manifest_bytes)}, types, platforms, common
+    return manifest, {"sha256": sha256(manifest_bytes), "size": len(manifest_bytes)}, types
+
+
+def store(cache, temporary):
+    """A blob into --cache under its SHA-256, once: the same piece in two versions is one blob."""
+    digest, size = sha256_file(temporary), temporary.stat().st_size
+    if (cache / digest).is_file():
+        temporary.unlink()
+    else:
+        temporary.replace(cache / digest)
+    return digest, size
+
+
+def zip_entry(name, size):
+    """An entry as pieces and ready-made archives write it: the same bytes for the same content (RFC 0031)."""
+    info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+    info.compress_type = zipfile.ZIP_DEFLATED
+    info.external_attr = 0o644 << 16
+    info.create_system = 3
+    info.file_size = size
+    return info
+
+
+def copy_into(out, name, size, source):
+    with out.open(zip_entry(name, size), "w", force_zip64=size >= 1 << 31) as to:
+        shutil.copyfileobj(source, to, 1 << 20)
+
+
+def pieces(archive, manifest, cache):
+    """The archive split into pieces (RFC 0031, "Pieces: the format"), each a blob in --cache: the
+    pieces list's entries, in the order a device fetches them."""
+    builds = {b["path"]: b["platform"] for p in manifest["plugins"] for b in p["builds"]}
+    items = {i["path"] for i in manifest["items"]}
+    groups = {}
+    with zipfile.ZipFile(archive) as z:
+        for info in z.infolist():
+            if info.is_dir():
+                continue
+            name, parts = info.filename, info.filename.split("/")
+            build = next((p for p in ("/".join(parts[:k]) for k in range(len(parts), 0, -1)) if p in builds), None)
+            if name in ("library.json", "library.sig"):
+                key = ("file", name, None)
+            elif build:
+                key = ("zip", build, builds[build])
+            elif "/".join(parts[:2]) in items:
+                key = ("zip", "/".join(parts[:2]), None)
+            elif parts[0] == "Assets" and info.file_size >= MIN_SAMPLE:
+                key = ("file", name, None)
+            else:
+                key = ("zip", parts[0], None)
+            groups.setdefault(key, []).append(info)
+        temporary = cache / ".piece.partial"
+        out = []
+        for (kind, path, platform), infos in sorted(groups.items(), key=lambda g: (g[0][2] or "", g[0][1] not in ("library.json", "library.sig"), g[0][1])):
+            if kind == "file":
+                with z.open(infos[0]) as source, open(temporary, "wb") as to:
+                    shutil.copyfileobj(source, to, 1 << 20)
+            else:
+                with zipfile.ZipFile(temporary, "w") as to:
+                    for info in sorted(infos, key=lambda i: i.filename):
+                        with z.open(info) as source:
+                            copy_into(to, info.filename, info.file_size, source)
+            digest, size = store(cache, temporary)
+            piece = {"sha256": digest, "size": size, "installed": sum(i.file_size for i in infos), "type": kind, "path": path}
+            if platform:
+                piece["platform"] = platform
+            out.append(piece)
+    return out
+
+
+def assemble(path, listed, platform, cache):
+    """A ready-made archive (RFC 0031) from the pieces alone: the manifest and its signature, what
+    every platform shares, and this platform's builds (none for None)."""
+    with zipfile.ZipFile(path, "w") as out:
+        for piece in listed:
+            if piece.get("platform") not in (None, platform):
+                continue
+            blob = cache / piece["sha256"]
+            if piece["type"] == "file":
+                with open(blob, "rb") as source:
+                    copy_into(out, piece["path"], piece["installed"], source)
+            else:
+                with zipfile.ZipFile(blob) as z:
+                    for info in z.infolist():
+                        with z.open(info) as source:
+                            copy_into(out, info.filename, info.file_size, source)
 
 
 def version_key(version):
@@ -253,6 +342,8 @@ def read_release(path, root, publishers, tool, cache, problems):
     for fmt, plugin, version, platform, signers in report["builds"]:
         if signer not in signers:
             problems.add(path, f"the {platform} build of {fmt} {plugin} {version} is not signed by its publisher's key {signer}")
+    for fmt, plugin, version, platform in report["absent"]:  # an archive made for one device is not a submission
+        problems.add(path, f"the archive leaves out the {platform} build of {fmt} {plugin} {version} its manifest lists; submit the whole release")
     for fmt, plugin, version, platform, what in report["outside"]:
         problems.add(path, f"the {platform} build of {fmt} {plugin} {version} loads a library from outside the system and its bundle, which a device does not have: {what}")
     plugins = {(b[0], b[1], b[2]) for b in report["builds"]}
@@ -266,7 +357,7 @@ def read_release(path, root, publishers, tool, cache, problems):
     if len(problems) > before:
         return None
 
-    contents, manifest, types, platforms, common = facts(archive)
+    contents, manifest, types = facts(archive)
     # The record's license and source are the archive's own (its §6 directions travel inside it).
     if contents.get("license") and r.get("license") != contents["license"]:
         problems.add(path, f"`license` is not the archive's ({contents['license']})")
@@ -282,19 +373,18 @@ def read_release(path, root, publishers, tool, cache, problems):
     if len(problems) > before:
         return None
     r["name"] = contents["name"]
-    r["_kind"], r["_needs"] = contents["kind"], needs
+    r["_kind"], r["_needs"], r["_archive"], r["_manifest"], r["_signer"] = contents["kind"], needs, archive, contents, signer
     return r, {
         "version": release,
         "channel": r.get("channel", "stable"),
         "manifest": manifest,
-        # shortcut: the whole archive is one blob until RFC 0031 step 1 stores it in pieces.
-        "archive": {"sha256": r["archive"]["sha256"], "size": r["archive"]["size"]},
+        "pieces": None,  # written in main() with the sizes below, once every release is checked
         "packageSignature": True,
         # The packages it needs, as RFC 0031's index names them: for now the asset libraries its archive names.
         "requires": {**r.get("requires", {}), **({"packages": needs} if needs else {})},
         "types": types,
-        "platforms": platforms,
-        "common": common,
+        "platforms": {},
+        "common": {"size": 0, "installed": 0},
         "estimates": {},
         "yanked": r.get("yanked"),
     }
@@ -476,6 +566,7 @@ def main():
     ap.add_argument("--previous", type=Path, help="the repository before this change, to check nothing published changed")
     ap.add_argument("--previous-site", type=Path, help="the last published root, its signature and index, to write a delta from")
     ap.add_argument("--check", action="store_true", help="for a pull request: the root and index keys need not be set")
+    ap.add_argument("--exports", type=Path, help="where the ready-made archives are written (default: made, checked and dropped)")
     args = ap.parse_args()
     root, problems = args.repo, Problems()
     args.cache.mkdir(parents=True, exist_ok=True)
@@ -485,6 +576,9 @@ def main():
     blob_base = text(config, "blobBase", "repository-config.json", problems)
     if blob_base and not blob_base.startswith("https://"):
         problems.add("repository-config.json", "`blobBase` is not an https:// address")
+    export_download = config.get("exportDownload")  # none: no ready-made archives
+    if export_download is not None and not (isinstance(export_download, str) and export_download.startswith("https://") and export_download.endswith("-")):
+        problems.add("repository-config.json", "`exportDownload` is not an https:// address ending in `-` (the tag's start, as `blobBase`)")
     if not args.check or config.get("rootKey"):
         check_delegation(config, args.oscairn_sign, problems)
     if args.previous:
@@ -535,25 +629,27 @@ def main():
         print("\n".join(problems), file=sys.stderr)
         return 1
 
-    index_packages, blobs = [], set()
-    for pid in sorted(packages):
-        releases = sorted(packages[pid], key=lambda g: version_key(g[0]["release"]))
-        newest = releases[-1][0]
-        publisher = publishers[newest["publisher"]]
-        index_packages.append({
-            "id": pid,
-            "name": newest["name"],
-            "summary": newest["summary"],
-            "publisher": {"id": publisher["id"], "name": publisher["name"], "key": key_id(publisher["key"])},
-            "license": newest["license"],
-            "tags": newest.get("tags", []),
-            "versions": [v for _, v in releases],
-        })
-        blobs.update(v["archive"]["sha256"] for _, v in releases)
-    index = {"format": "oscairn.repository-index", "version": 1, "repository": config["repository"], "serial": args.serial, "packages": index_packages}
-
     out = args.out
     out.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory() as temporary:
+        exports_dir = args.exports or Path(temporary)
+        exports_dir.mkdir(parents=True, exist_ok=True)
+        index_packages, blobs, exported = publish(packages, publishers, revoked, export_download, args, exports_dir, problems)
+    if problems:
+        print("\n".join(problems), file=sys.stderr)
+        return 1
+    index = {"format": "oscairn.repository-index", "version": 1, "repository": config["repository"], "serial": args.serial, "packages": index_packages}
+    # Each ready-made archive's stable address, a page that sends the browser on to the file
+    # (GitHub Pages sends no redirects of its own): exports/<package ID>/<version>/<file name>/.
+    for pid, version, name in exported:
+        page = out / "exports" / pid / version / name / "index.html"
+        page.parent.mkdir(parents=True, exist_ok=True)
+        target = html.escape(f"{export_download}{pid}/{name}", quote=True)
+        page.write_text(f'<!doctype html>\n<html lang="en"><meta charset="utf-8"><meta name="robots" content="noindex">\n'
+                        f'<meta http-equiv="refresh" content="0; url={target}">\n<title>{html.escape(name)}</title>\n'
+                        f'<p>Downloading <a href="{target}">{html.escape(name)}</a>, a ready-made Oscairn archive. If nothing happens, follow the link.</p>\n')
+    if export_download:
+        (out / "exports.txt").write_text("".join(f"{pid} {name}\n" for pid, _, name in exported))
     root_file = {
         "format": "oscairn.repository",
         "version": 1,
@@ -570,8 +666,67 @@ def main():
     }
     (out / "repository.json").write_bytes(dumps(root_file) + b"\n")
     (out / "blobs.txt").write_text("".join(b + "\n" for b in sorted(blobs)))
-    print(f"serial {args.serial}: {len(index_packages)} packages, {sum(len(p['versions']) for p in index_packages)} versions, {len(blobs)} blobs")
+    print(f"serial {args.serial}: {len(index_packages)} packages, {sum(len(p['versions']) for p in index_packages)} versions, {len(blobs)} blobs, {len(exported)} ready-made archives")
     return 0
+
+
+def publish(packages, publishers, revoked, export_download, args, exports_dir, problems):
+    """Each release split into pieces (blobs in --cache, deduplicated across versions) and its
+    ready-made archives assembled from them into exports_dir, each checked with `oscairn-sign
+    verify` (RFC 0031). Returns the index's packages, every blob and the archives made."""
+    revoked_builds = {e["sha256"] for e in revoked["builds"]}
+    withdrawn = {(e["id"], e["version"]) for e in revoked["versions"]}
+    revoked_keys = {e["key"] for e in revoked["keys"]}
+    index_packages, blobs, exported = [], set(), []
+    for pid in sorted(packages):
+        releases = sorted(packages[pid], key=lambda g: version_key(g[0]["release"]))
+        for r, v in releases:
+            listed = pieces(r["_archive"], r["_manifest"], args.cache)
+            (args.cache / ".pieces.partial").write_bytes(dumps({"format": "oscairn.repository-pieces", "version": 1, "pieces": listed}))
+            digest, size = store(args.cache, args.cache / ".pieces.partial")
+            v["pieces"] = {"sha256": digest, "size": size}
+            blobs.add(digest)
+            for p in listed:
+                sizes = v["platforms"].setdefault(p["platform"], {"size": 0, "installed": 0}) if "platform" in p else v["common"]
+                sizes["size"] += p["size"]
+                sizes["installed"] += p["installed"]
+                blobs.add(p["sha256"])
+            # Its ready-made archives: one per platform with builds, or one for a package with none.
+            targets = sorted(v["platforms"]) or [None]
+            builds = {}
+            for plugin in r["_manifest"]["plugins"]:
+                for b in plugin["builds"]:
+                    builds.setdefault(b["platform"], set()).add(b["sha256"])
+            if (not export_download or (pid, r["release"]) in withdrawn or publishers[r["publisher"]]["key"] in revoked_keys
+                    or any(v["common"]["size"] + (v["platforms"][t]["size"] if t else 0) > MAX_ARCHIVE for t in targets)):
+                v["noExport"] = True
+                continue
+            missing = [t for t in targets if t and builds.get(t, set()) & revoked_builds]  # a revoked build's platform alone (decided 2026-11-12)
+            for t in targets:
+                if t in missing:
+                    continue
+                name = f"{pid}-{r['release']}-{t}.olib" if t else f"{pid}-{r['release']}.olib"
+                assemble(exports_dir / name, listed, t, args.cache)
+                where = f"packages/{pid}/{r['release']}.json: its ready-made archive {name}"
+                report = verify(args.oscairn_sign, exports_dir / name, where, problems, t)
+                have = sum(any(b["platform"] == t for b in p["builds"]) for p in r["_manifest"]["plugins"])  # each plugin's build for t
+                if report and (report["archive"] != (pid, r["_signer"]) or any(b[3] != t for b in report["builds"]) or len(report["builds"]) != have):
+                    problems.add(where, "is not the release's archive for that platform: " + json.dumps(report))
+                exported.append((pid, r["release"], name))
+            if missing:
+                v["noExport"] = missing
+        newest = releases[-1][0]
+        publisher = publishers[newest["publisher"]]
+        index_packages.append({
+            "id": pid,
+            "name": newest["name"],
+            "summary": newest["summary"],
+            "publisher": {"id": publisher["id"], "name": publisher["name"], "key": key_id(publisher["key"])},
+            "license": newest["license"],
+            "tags": newest.get("tags", []),
+            "versions": [v for _, v in releases],
+        })
+    return index_packages, blobs, exported
 
 
 if __name__ == "__main__":

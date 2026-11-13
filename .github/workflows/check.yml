@@ -44,7 +44,9 @@ jobs:
         # LGPL or AGPL plugin package without its source or license texts is refused by
         # `oscairn-sign verify`); the record's dependencies the archive's, and each asset library
         # a release needs an asset package in this repository or this pull request at that
-        # version or later; no published release or publisher key changed.
+        # version or later; no published release or publisher key changed. Each release is split
+        # into pieces and each ready-made archive per platform made from them and checked with
+        # `oscairn-sign verify`, as publishing will.
         run: >
           python3 -I .base/scripts/build-index.py --check
           --oscairn-sign "${{ steps.tools.outputs.path }}"
