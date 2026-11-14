@@ -275,7 +275,8 @@ address or its fork and tag, imports one through `scripts/import-release.py`:
    [Linux allowlist](https://github.com/oscairn/oscairn/blob/main/docs/plugin-porting.md#the-linux-allowlist),
    no RPATH or RUNPATH, and no newer glibc or libstdc++ symbol version than the image's.
 2. **plugin-check** plays each plugin with `oscairn-plugin-check`, built at `OSCAIRN_COMMIT`, on
-   its platform's runner: `macos-15` for `macos-arm64`, `ubuntu-24.04-arm` for `linux-arm64`.
+   its platform's runner: `macos-15` for `macos-arm64`, `ubuntu-24.04-arm` for `linux-arm64`,
+   `ubuntu-24.04` for `linux-x86_64`.
    Another platform is another row in `PLATFORMS` in the script.
 3. **candidate** keeps the checked, unsigned candidate as the `unsigned-candidate` artifact: the
    builds, the license files, `plan.json` and `sign.sh`, the commands that sign it.
