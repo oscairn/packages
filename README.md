@@ -255,8 +255,8 @@ review from Code Owners.
 
 ### Importing a release
 
-Oscairn's own plugins (its forks of Dexed, Surge, sfizz, sst-effects and setBfree, and the
-Arpeggiator) are released by tagging `vX.Y.Z` or `oscairn-vX.Y.Z` on the fork, whose CI publishes
+Oscairn's own plugins (its forks of Dexed, Surge, sfizz, sst-effects and setBfree, the
+Arpeggiator, and its first-party VA and Sampler) are released by tagging `vX.Y.Z` or `oscairn-vX.Y.Z` on the fork, whose CI publishes
 a GitHub release: one build file per platform, `licenses.tar.gz` and `oscairn-release.json`, the manifest
 ([`schemas/plugin-release.schema.json`](schemas/plugin-release.schema.json)). Each plugin in it
 has a `kind`, `synth`, `effect` or `note-effect`, which says how `oscairn-plugin-check` plays it:
@@ -267,7 +267,7 @@ are the package's).
 address or its fork and tag, imports one through `scripts/import-release.py`:
 
 1. **verify** fetches the manifest and its files and checks the manifest against the schema, every
-   file's SHA-256 and size, that the source is one of Oscairn's forks and its tag is
+   file's SHA-256 and size, that the source is one of Oscairn's plugin repositories and its tag is
    `source.revision` there, each build's libraries, and that the license and license files are
    the package's last release's (a difference fails, unless the run accepts a license change).
    Libraries are read from the files here: a macOS build only `/usr/lib/` and `/System/` and no

@@ -200,6 +200,11 @@ def main(tool, plugin_check=None):
         _, result = verify()
         check(result.returncode == 1 and "license MIT becomes GPL-3.0-or-later" in result.stderr, "a changed license is refused: " + result.stderr)
 
+        for url, listed in (("https://github.com/oscairn/other", False), ("https://github.com/oscairn/va", True), ("https://github.com/oscairn/sampler", True)):
+            release(change=lambda m: m["source"].update(url=url))
+            _, result = verify()
+            check(("is not one of Oscairn's plugin repositories" not in result.stderr) == listed, f"{url} is {'listed' if listed else 'refused'}: " + result.stderr)
+
         release(build=macho_with_rpath())
         _, result = verify()
         check(result.returncode == 1 and "LC_RPATH, /opt/homebrew/lib" in result.stderr, "a macOS build with an rpath is refused: " + result.stderr)
