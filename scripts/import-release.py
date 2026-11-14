@@ -51,6 +51,7 @@ FIRST_PARTY = {f"https://github.com/oscairn/{name}" for name in ("va", "sampler"
 PLATFORMS = {
     "macos-arm64": {"runner": "macos-15", "macho": 0x0100000C},
     "linux-arm64": {"runner": "ubuntu-24.04-arm", "elf": 183},
+    "linux-x86_64": {"runner": "ubuntu-24.04", "elf": 62},
 }
 # Oscairn's Linux allowlist (oscairn docs/plugin-porting.md, "The Linux allowlist"): what every
 # image carries, and the newest glibc and libstdc++ symbol versions every image has.

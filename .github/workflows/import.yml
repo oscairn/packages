@@ -69,8 +69,8 @@ jobs:
 
   plugin-check:
     # Each build played on its own platform (import-release.py's PLATFORMS: macos-15 for
-    # macos-arm64, ubuntu-24.04-arm for linux-arm64). Plugin code runs here, so this job has no
-    # key and only a read token, and the tools are cached before it runs.
+    # macos-arm64, ubuntu-24.04-arm for linux-arm64, ubuntu-24.04 for linux-x86_64). Plugin code
+    # runs here, so this job has no key and only a read token, and the tools are cached before it runs.
     needs: verify
     name: plugin-check ${{ matrix.platform }}
     strategy:
