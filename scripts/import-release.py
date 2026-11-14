@@ -9,7 +9,7 @@ licenses.tar.gz. Steps, each a command, as .github/workflows/import.yml runs the
     import-release.py verify (--release <url> | --repo oscairn/<fork> --tag [oscairn-]vX.Y.Z | --from <url>)
                              --out <candidate> [--packages .] [--accept-license-change]
         Fetches the manifest and its files into <candidate>, and checks: the manifest against the
-        schema; every file's SHA-256 and size; the source is an allowed Oscairn fork and the tag is
+        schema; every file's SHA-256 and size; the source is an allowed Oscairn plugin repository and the tag is
         source.revision there; each build's libraries (Mach-O and ELF read here, so on any
         machine); the license and license files are the package's last release's. Writes
         plan.json, matrix.json (a runner for each platform) and sign.sh (the commands that sign
@@ -44,6 +44,8 @@ SCHEMA = HERE.parent / "schemas" / "plugin-release.schema.json"
 MANIFEST = "oscairn-release.json"
 LICENSES = "licenses.tar.gz"
 FORKS = {f"https://github.com/oscairn/{name}" for name in ("dexed", "surge", "sfizz", "sst-effects", "setBfree", "arpeggiator")}
+# First-party plugins, not forks.
+FIRST_PARTY = {f"https://github.com/oscairn/{name}" for name in ("va", "sampler")}
 # One row per platform: the runner plugin-check runs on, and the binary a build must be
 # (Mach-O CPU type or ELF machine). Another platform is another row.
 PLATFORMS = {
@@ -367,8 +369,8 @@ def verify(args):
     for b in manifest["builds"]:
         if b["platform"] not in PLATFORMS:
             problems.append(f"no runner for {b['platform']}: add a row to PLATFORMS in import-release.py")
-    if source["url"] not in FORKS:
-        problems.append(f"source.url {source['url']} is not one of Oscairn's forks: {sorted(FORKS)}")
+    if source["url"] not in FORKS | FIRST_PARTY:
+        problems.append(f"source.url {source['url']} is not one of Oscairn's plugin repositories: {sorted(FORKS | FIRST_PARTY)}")
     if fork and source["url"] != fork:
         problems.append(f"source.url {source['url']} is not {fork}, which holds the release")
     if source["tag"] not in ("v" + package["version"], "oscairn-v" + package["version"]) or (args.tag and source["tag"] != args.tag):
