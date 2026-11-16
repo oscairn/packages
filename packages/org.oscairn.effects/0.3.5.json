@@ -1,0 +1,32 @@
+{
+  "format": "oscairn.repository-release",
+  "version": 1,
+  "id": "org.oscairn.effects",
+  "release": "0.3.5",
+  "publisher": "org.oscairn",
+  "summary": "Oscairn's effects (Reverb with Hall A, EQ, Delay, Dynamics, Tremolo & Rotary, Chorus, Amp Chain) built on sst-effects.",
+  "license": "GPL-3.0-or-later AND MIT",
+  "tags": [
+    "audio-effect",
+    "reverb",
+    "equalizer",
+    "delay",
+    "compressor"
+  ],
+  "channel": "stable",
+  "platforms": [
+    "linux-arm64",
+    "linux-x86_64",
+    "macos-arm64"
+  ],
+  "source": {
+    "url": "https://github.com/oscairn/sst-effects",
+    "revision": "f848cff3c2d1f4ba1faf5ecf503c23f856e257e1"
+  },
+  "archive": {
+    "path": "0.3.5.olib",
+    "sha256": "b8c8ac8e014fdd442ebf622850d8fd3b5bf102abb448adc40a17bd8302c1aceb",
+    "size": 1466703
+  },
+  "yanked": null
+}
