@@ -13,7 +13,9 @@ licenses.tar.gz. Steps, each a command, as .github/workflows/import.yml runs the
         source.revision there; each build's libraries (Mach-O and ELF read here, so on any
         machine); the license and license files are the package's last release's. Writes
         plan.json, matrix.json (a runner for each platform) and sign.sh (the commands that sign
-        it, for signing by hand).
+        it, for signing by hand). A build for a platform PLATFORMS has no row for (no Oscairn host
+        to play it on) is left out of the candidate and said so, in the output, notice.txt and
+        plan.json's notImported; a release with no other build is refused.
     import-release.py plugin-check --candidate <candidate> --platform <p> --plugin-check <tool>
         Plays each plugin of that platform's build through oscairn-plugin-check, on that platform.
     import-release.py sign --candidate <candidate> --key <key> --oscairn-sign <tool>
@@ -367,9 +369,14 @@ def verify(args):
                           ("plugins' IDs", [p["id"] for p in manifest["plugins"]]), ("license files' names", [f["file"] for f in manifest["licenseFiles"]])):
         if len(set(values)) != len(values):
             problems.append(f"the {field} are not each different")
-    for b in manifest["builds"]:
-        if b["platform"] not in PLATFORMS:
-            problems.append(f"no runner for {b['platform']}: add a row to PLATFORMS in import-release.py")
+    # A build for a platform with no row in PLATFORMS cannot be played and checked here, so it is
+    # left out: not fetched, not in the archive, not in the record. The manifest is not signed (each
+    # build has its own SHA-256, and the archive is made and signed from the builds kept), so the
+    # builds kept check the same either way. A release with no build to keep is refused.
+    builds = [b for b in manifest["builds"] if b["platform"] in PLATFORMS]
+    left_out = [b["platform"] for b in manifest["builds"] if b["platform"] not in PLATFORMS]
+    if not builds:
+        problems.append(f"no build to import: the release has builds for {', '.join(left_out)} only, and PLATFORMS has no row for them (no Oscairn host to check them on)")
     if source["url"] not in FORKS | FIRST_PARTY:
         problems.append(f"source.url {source['url']} is not one of Oscairn's plugin repositories: {sorted(FORKS | FIRST_PARTY)}")
     if fork and source["url"] != fork:
@@ -386,7 +393,7 @@ def verify(args):
         problems.append(f"the tag {source['tag']} in {source['url']} is {commit or 'not there'}, not source.revision {source['revision']}")
 
     # Every file, by its SHA-256 and size; each build's libraries.
-    for b in manifest["builds"]:
+    for b in builds:
         path = out / "builds" / b["platform"] / b["file"]
         path.parent.mkdir(parents=True)
         download(base + b["file"], path, b["size"])
@@ -432,11 +439,14 @@ def verify(args):
         "source": {"url": source["url"], "revision": source["revision"]}, "tag": source["tag"],
         "dependencies": manifest.get("dependencies", {}).get("assets", []),
         "plugins": manifest["plugins"],
-        "builds": [{"platform": b["platform"], "path": f"builds/{b['platform']}/{b['file']}"} for b in manifest["builds"]],
+        "builds": [{"platform": b["platform"], "path": f"builds/{b['platform']}/{b['file']}"} for b in builds],
+        "notImported": left_out,
         "archive": f"out/{package['id']}-{package['version']}.olib",
     }
     (out / "plan.json").write_text(json.dumps(plan, indent=2) + "\n")
-    (out / "matrix.json").write_text(json.dumps([{"platform": b["platform"], "runner": PLATFORMS[b["platform"]]["runner"]} for b in manifest["builds"]]))
+    (out / "matrix.json").write_text(json.dumps([{"platform": b["platform"], "runner": PLATFORMS[b["platform"]]["runner"]} for b in builds]))
+    notice = "".join(f"{platform} build not imported: no Oscairn host for that platform yet\n" for platform in left_out)
+    (out / "notice.txt").write_text(notice)
     quoted = lambda argv: " ".join(a if a in ('"$key"', '"$sign"') else shlex.quote(a) for a in argv)
     (out / "sign.sh").write_text(
         "#!/bin/sh\n"
@@ -448,7 +458,8 @@ def verify(args):
         "cd \"$(dirname \"$0\")\"\nmkdir -p out\n"
         + "".join(quoted(c) + "\n" for c in commands(plan, '"$key"', '"$sign"')))
     print(f"verified {package['id']} {package['version']} from {source['url']} {source['tag']} ({source['revision']}): "
-          + ", ".join(b["platform"] for b in manifest["builds"]))
+          + ", ".join(b["platform"] for b in builds))
+    print(notice, end="")
 
 
 # plugin-check, sign, record ------------------------------------------------------------------
