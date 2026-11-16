@@ -205,6 +205,24 @@ def main(tool, plugin_check=None):
             _, result = verify()
             check(("is not one of Oscairn's plugin repositories" not in result.stderr) == listed, f"{url} is {'listed' if listed else 'refused'}: " + result.stderr)
 
+        # A package whose new release comes from another first-party repository than its last one's
+        # (the previous record's source is oscairn/arpeggiator): no check compares the two source URLs, so
+        # it verifies; the publisher stays the last release's, and the license is still compared.
+        moved = temp / "git" / "oscairn" / "sampler"
+        moved.mkdir(parents=True)
+        for command in (["init", "-q"], ["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "release"],
+                        ["-c", "user.name=t", "-c", "user.email=t@example.com", "tag", "-a", "-m", "v0.1.5", "v0.1.5"]):
+            assert run("git", "-C", moved, *command).returncode == 0
+        moved_revision = run("git", "-C", moved, "rev-parse", "HEAD").stdout.strip()
+        release(change=lambda m: m["source"].update(url="https://github.com/oscairn/sampler", revision=moved_revision))
+        candidate, result = verify()
+        check(result.returncode == 0 and json.loads((candidate / "plan.json").read_bytes())["publisher"] == "org.oscairn"
+              and json.loads((candidate / "plan.json").read_bytes())["source"]["url"] == "https://github.com/oscairn/sampler",
+              "a new release from another first-party repository verifies, as the last release's publisher: " + result.stdout + result.stderr)
+        release(change=lambda m: m["source"].update(url="https://github.com/oscairn/sampler", revision=moved_revision) or m.update(license="GPL-3.0-or-later"))
+        _, result = verify()
+        check(result.returncode == 1 and "license MIT becomes GPL-3.0-or-later" in result.stderr, "and a changed license is still refused there: " + result.stderr)
+
         # A platform with no row is left out, said so, and the rest is imported; with no other build it is refused.
         def with_windows(m):
             m["builds"].append({"platform": "windows-x86_64", "file": "oscairn-arpeggiator-windows-x86_64.clap", "sha256": "0" * 64, "size": 9})
