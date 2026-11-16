@@ -58,6 +58,10 @@ runs:
         cd "$RUNNER_TEMP/oscairn"
         git fetch -q --depth 1 "https://github.com/$REPOSITORY.git" "$COMMIT"
         git checkout -q FETCH_HEAD
+        # The configure needs the Rust release samplepack pins; the script installs it with
+        # rustup (and rustup itself if missing), and the build then downloads nothing
+        tools/install-rust.sh
+        export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
         cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
         cmake --build build --target $TARGETS
         mkdir -p "$RUNNER_TEMP/oscairn-tools"
