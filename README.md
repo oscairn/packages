@@ -277,7 +277,11 @@ address or its fork and tag, imports one through `scripts/import-release.py`:
 2. **plugin-check** plays each plugin with `oscairn-plugin-check`, built at `OSCAIRN_COMMIT`, on
    its platform's runner: `macos-15` for `macos-arm64`, `ubuntu-24.04-arm` for `linux-arm64`,
    `ubuntu-24.04` for `linux-x86_64`.
-   Another platform is another row in `PLATFORMS` in the script.
+   Another platform is another row in `PLATFORMS` in the script. A release's build for a platform
+   with no row (`windows-x86_64` today: Oscairn has no Windows host to load it in) is left out:
+   it is not fetched, not in the archive and not in the record's `platforms`, and the run's
+   summary, the candidate's `notice.txt` and the pull request say "<platform> build not imported:
+   no Oscairn host for that platform yet". A release with no build left to import is refused.
 3. **candidate** keeps the checked, unsigned candidate as the `unsigned-candidate` artifact: the
    builds, the license files, `plan.json` and `sign.sh`, the commands that sign it.
 4. **sign**, only with the `OSCAIRN_PUBLISHER_KEY` secret, signs each build and the archive,

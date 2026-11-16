@@ -60,6 +60,10 @@ jobs:
           if [ "$ACCEPT" = true ]; then from+=(--accept-license-change); fi
           python3 -I scripts/import-release.py verify "${from[@]}" --out "$RUNNER_TEMP/candidate" --packages .
           echo "matrix=$(cat "$RUNNER_TEMP/candidate/matrix.json")" >> "$GITHUB_OUTPUT"
+          # Builds left out (no row in PLATFORMS), said plainly in the run's summary.
+          if [ -s "$RUNNER_TEMP/candidate/notice.txt" ]; then
+            { echo "Not imported:"; sed 's/^/- /' "$RUNNER_TEMP/candidate/notice.txt"; } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
@@ -126,6 +130,11 @@ jobs:
       - name: Say how to sign it by hand
         run: |
           {
+            if [ -s candidate/notice.txt ]; then
+              echo "Not imported:"
+              sed 's/^/- /' candidate/notice.txt
+              echo
+            fi
             echo "Checked. To sign it by hand, download the unsigned-candidate artifact, then:"
             echo '```sh'
             echo "sh candidate/sign.sh <publisher key> <oscairn-sign>"
@@ -205,6 +214,7 @@ jobs:
           GH_TOKEN: ${{ secrets.OSCAIRN_PR_TOKEN || github.token }}
           JOB_TOKEN: ${{ secrets.OSCAIRN_PR_TOKEN == '' }}
         run: |
+          notice=$(cat "$RUNNER_TEMP/candidate/notice.txt")
           read -r id version fork tag revision < <(python3 -I -c 'import json, sys; p = json.load(open(sys.argv[1])); print(p["id"], p["version"], p["source"]["url"].rsplit("/", 1)[1], p["tag"], p["source"]["revision"])' "$RUNNER_TEMP/candidate/plan.json")
           branch="import/$id-$version"
           git config user.name "github-actions[bot]"
@@ -213,7 +223,7 @@ jobs:
           git add "packages/$id/$version.json" "packages/$id/$version.olib"
           git commit -q -m "$id $version: oscairn/$fork $tag"
           git push "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git" "HEAD:refs/heads/$branch"
-          gh pr create --base main --head "$branch" --title "$id $version" --body "Imported from https://github.com/oscairn/$fork/releases/tag/$tag (\`$revision\`) by $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID: its manifest, hashes, source tag, libraries and license checked, each build played by oscairn-plugin-check on its platform, signed with the publisher key. Merge once Check passes."
+          gh pr create --base main --head "$branch" --title "$id $version" --body "Imported from https://github.com/oscairn/$fork/releases/tag/$tag (\`$revision\`) by $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID: its manifest, hashes, source tag, libraries and license checked, each build played by oscairn-plugin-check on its platform, signed with the publisher key. ${notice:+Not imported: $notice. }Merge once Check passes."
           if [ "$JOB_TOKEN" = true ]; then
             echo "::warning::Opened with the job's own token, which starts no workflow: close and reopen the pull request so Check runs, or set OSCAIRN_PR_TOKEN."
           fi

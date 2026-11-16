@@ -205,6 +205,31 @@ def main(tool, plugin_check=None):
             _, result = verify()
             check(("is not one of Oscairn's plugin repositories" not in result.stderr) == listed, f"{url} is {'listed' if listed else 'refused'}: " + result.stderr)
 
+        # A platform with no row is left out, said so, and the rest is imported; with no other build it is refused.
+        def with_windows(m):
+            m["builds"].append({"platform": "windows-x86_64", "file": "oscairn-arpeggiator-windows-x86_64.clap", "sha256": "0" * 64, "size": 9})
+        release(change=with_windows)  # its file is not served: a left-out build is never fetched
+        candidate, result = verify()
+        plan = json.loads((candidate / "plan.json").read_bytes())
+        check(result.returncode == 0 and "windows-x86_64 build not imported: no Oscairn host for that platform yet" in result.stdout,
+              "a build for a platform with no row is left out, with a notice: " + result.stdout + result.stderr)
+        check([b["platform"] for b in plan["builds"]] == ["macos-arm64"] and plan["notImported"] == ["windows-x86_64"]
+              and json.loads((candidate / "matrix.json").read_bytes()) == [{"platform": "macos-arm64", "runner": "macos-15"}]
+              and "windows" not in (candidate / "sign.sh").read_text() and not (candidate / "builds" / "windows-x86_64").exists()
+              and (candidate / "notice.txt").read_text().startswith("windows-x86_64 build not imported"),
+              "the plan, matrix and sign.sh do not have it")
+        check(not (candidate / "notice.txt").read_text() == "" and (candidate / "notice.txt").exists(), "notice.txt says so")
+        release()
+        candidate, result = verify()
+        check((candidate / "notice.txt").read_text() == "" and json.loads((candidate / "plan.json").read_bytes())["notImported"] == []
+              and "not imported" not in result.stdout, "a release of known platforms has no notice")
+
+        def only_windows(m):
+            m["builds"][0]["platform"] = "windows-x86_64"
+        release(change=only_windows)
+        _, result = verify()
+        check(result.returncode == 1 and "no build to import" in result.stderr, "a release with no importable build is refused: " + result.stderr)
+
         release(build=macho_with_rpath())
         _, result = verify()
         check(result.returncode == 1 and "LC_RPATH, /opt/homebrew/lib" in result.stderr, "a macOS build with an rpath is refused: " + result.stderr)
