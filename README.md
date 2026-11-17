@@ -30,8 +30,9 @@ release in pieces.
 > that a sample or waveform file is a piece of its own, and the manifest's `init` field are in this
 > repository. The first release of the types package, `org.oscairn.sample-types` 1.0.0, is not:
 > a new package id's first release goes through the import only when the dispatcher asks for it
-> (the `first-release` input, "A first release", below), or is signed by the owner by hand; no
-> record of it has been added.
+> (the `first-release` input, "A first release", below), or is signed by the owner by hand; the
+> types package, a library with no plugin, goes through it as "A library release". No record of it
+> has been added.
 
 ## Submitting a package
 
@@ -366,6 +367,33 @@ source plainly: the approver accepts them for the first time. The pull request's
 release of a new package id". Without the flag, or when the id's publisher is not Oscairn, the
 first release is signed by the owner by hand, as in step 4 above (`sign.sh`, then `record`, which now creates
 the package's folder).
+
+**A library release.** A package that is only a library, with no plugin and no code (today the types
+package, `org.oscairn.sample-types`, whose item types live in the host repository), goes through the
+same workflow. Its release's `oscairn-release.json` has `"kind": "library"` and is checked against
+[`schemas/library-release.schema.json`](schemas/library-release.schema.json):
+
+- `format` `oscairn.library-release`, `version` 1, `kind` `library`; `package` `{id, version, name, summary}`;
+  `tags` (the record's); `license` and `licenseFiles` (at least one, in `licenses.tar.gz` as for a plugin);
+  `dependencies.packages` if any; `source` `{url, revision, tag}`.
+- `files`: each a release asset, `{file, path, sha256, size}`, where `path` is its place in the package and
+  can only be `Types/<package id>/<name>.json`, an item type manifest (a JSON object, at most 64 KiB, format
+  `oscairn.type`). Nothing else is allowed, and a manifest with `builds` or `plugins` is refused.
+- `source.url` is one of the first-party repositories (`va`, `sampler`, `fm`) or the host repository,
+  `oscairn/oscairn`, where the types' source of truth is; a *plugin* release from the host repository is
+  still refused. The tag is `vX.Y.Z`, `oscairn-vX.Y.Z` or `<package id>-vX.Y.Z` (the last so that a package
+  of the host repository does not take a name its own releases would).
+
+verify checks it as it does a plugin release (schema, every file's SHA-256 and size, the tag is
+`source.revision`, the license files, dependencies, `removed.json`, a version never here already, the
+license against the last release's, and the `first-release` rules exactly as above, with the publisher
+`org.oscairn`), but there is nothing to play: its `matrix.json` is empty, the **plugin-check** job is
+skipped and **candidate** goes on. **sign** (behind `publisher-signing`, as for any release) runs
+`oscairn-sign library-package --key ... --license ... --license-file ... --source ... <archive> <id> <name> tree`,
+and `record` checks that the archive is signed by the publisher, has no build and holds exactly the listed
+files and license files, and writes the record: `kind` library by having no plugin, `tags`, `platforms: []`,
+`channel`, `source`, `dependencies.packages` if any, no items. `scripts/make-library-release.py` makes
+the release's files from a tree (`oscairn-release.json`, `licenses.tar.gz`, the type files).
 
 **The init library exception.** `import-release.py` imports only plugin releases. The owner has allowed
 one exception beside a first release: **a plugin release's import also publishes that plugin's own init
