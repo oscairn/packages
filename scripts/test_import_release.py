@@ -514,6 +514,15 @@ def main(tool, plugin_check=None):
         check(result.returncode == 0 and "--library" not in argv and "--sound" not in argv and "initPackage" not in json.loads((candidate / "plan.json").read_bytes())
               and "init" not in script.replace("# ", ""), "a release without init is unchanged: neither is passed, nothing is planned for it: " + json.dumps(argv))
 
+        # A version removed.json lists is never imported again.
+        release()
+        (packages / "removed.json").write_text(json.dumps({"format": "oscairn.repository-removals", "version": 1, "versions": [
+            {"id": "org.oscairn.arpeggiator", "version": "0.1.5", "reason": "test", "date": "2026-11-17"}]}))
+        _, result = verify()
+        check(result.returncode == 1 and "org.oscairn.arpeggiator 0.1.5 was removed (removed.json)" in result.stderr, "a removed id and version is refused: " + result.stderr.strip()[-300:])
+        (packages / "removed.json").unlink()
+        release()
+
         # Refusals: each condition, with its message, and nothing written by verify.
         def refused(case, wanted, **options):
             before = tree(packages)

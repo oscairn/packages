@@ -290,6 +290,12 @@ def library_problems(path, platform):
         return [f"cannot be read: {e}"]
 
 
+def removed_versions(packages):
+    """removed.json's entries (README.md): versions maintainers deleted, which stay refused."""
+    path = packages / "removed.json"
+    return json.loads(path.read_bytes()).get("versions", []) if path.exists() else []
+
+
 # The previous release ------------------------------------------------------------------------
 
 def previous_release(packages, package_id, init=False):
@@ -663,6 +669,8 @@ def verify(args):
     if source["tag"] not in ("v" + package["version"], "oscairn-v" + package["version"]) or (args.tag and source["tag"] != args.tag):
         problems.append(f"source.tag {source['tag']} is not v{package['version']} or oscairn-v{package['version']}" + (f" and {args.tag}" if args.tag else ""))
     packages = Path(args.packages)
+    if any(e.get("id") == package["id"] and e.get("version") == package["version"] for e in removed_versions(packages)):
+        problems.append(f"{package['id']} {package['version']} was removed (removed.json): a removed version is never published again; publish a new version")
     if (packages / "packages" / package["id"] / f"{package['version']}.json").exists():
         problems.append(f"{package['id']} {package['version']} is here already: a version never changes once merged")
     package_needs = manifest.get("dependencies", {}).get("packages", [])

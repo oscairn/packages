@@ -213,6 +213,31 @@ def main(tool):
         check(out.returncode != 0 and "a published release changed" in out.stderr, "changing a published release is refused")
         (release_dir / "2.1.0.json").write_text(json.dumps(release))
 
+        # A published release never disappears, unless removed.json lists it (a maintainer's decision).
+        (release_dir / "2.1.0.json").unlink()
+        out = build(temp / "gone", "--previous", previous)
+        check(out.returncode != 0 and "a published release was removed" in out.stderr, "a release that disappears without being listed is refused")
+        entry = {"id": "com.example.organ", "version": "2.1.0", "reason": "The old organ", "date": "2026-11-17"}
+        removals = lambda *entries: json.dumps({"format": "oscairn.repository-removals", "version": 1, "versions": list(entries)})
+        (repo / "removed.json").write_text(removals(dict(entry, version="9.9.9")))
+        out = build(temp / "gone-other", "--previous", previous)
+        check(out.returncode != 0 and "a published release was removed" in out.stderr, "listing another version does not let this one disappear")
+        (repo / "removed.json").write_text(removals(entry))
+        out = build(temp / "gone-listed", "--previous", previous)
+        check(out.returncode == 0, "a release removed.json lists may disappear: " + out.stderr.strip())
+        (release_dir / "2.1.0.json").write_text(json.dumps(dict(release, summary="Changed")))
+        out = build(temp / "gone-here", "--previous", previous)
+        check(out.returncode != 0 and "listed as removed but its release is here" in out.stderr, "a listed version whose release is back is refused")
+        (release_dir / "2.1.0.json").unlink()
+        for what, text, expect in (("a repeated entry", removals(entry, entry), "is listed twice"), ("an entry without a reason", removals(dict(entry, reason=" ")), "non-empty `reason`"),
+                                   ("an impossible date", removals(dict(entry, date="2026-02-31")), "real `date`"), ("an entry with an unknown field", removals(dict(entry, extra=1)), "needs exactly"),
+                                   ("another format", json.dumps({"format": "x", "version": 1, "versions": []}), "is not an oscairn.repository-removals")):
+            (repo / "removed.json").write_text(text)
+            out = build(temp / "bad-removed", "--previous", previous)
+            check(out.returncode != 0 and expect in out.stderr, f"{what} in removed.json is refused: " + out.stderr.strip())
+        (repo / "removed.json").unlink()
+        (release_dir / "2.1.0.json").write_text(json.dumps(release))
+
         # Releases each refused: a missing claimed platform, a wrong hash, an unsigned archive.
         def refused(changed, expect, what, olib_bytes=None):
             (release_dir / "2.1.0.json").write_text(json.dumps(changed))

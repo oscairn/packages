@@ -118,6 +118,14 @@ pass.
 **A version never changes once merged.** Publish a fix as a new version. To yank one, set its
 `yanked` to a reason: it is no longer offered, but Performances that use it still get it.
 
+**Removing a version is a maintainer's decision.** `removed.json` lists versions deleted on
+purpose (`{"format": "oscairn.repository-removals", "version": 1, "versions": [{"id", "version",
+"reason", "date"}]}`, each field required, the date `YYYY-MM-DD`). The check lets exactly those
+releases disappear, still refuses any other change or disappearance, and refuses a listed version
+whose record is back; the import never publishes a listed id and version again. Use it only when
+an ID changes hands; a withdrawn version (`revoked.json`) stays listed, a removed one does not.
+Devices keep what they installed, and the version is no longer offered.
+
 ## The layout
 
 ### Publishers
