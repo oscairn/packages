@@ -15,9 +15,14 @@ licenses.tar.gz. Steps, each a command, as .github/workflows/import.yml runs the
         plan.json, matrix.json (a runner for each platform) and sign.sh (the commands that sign
         it, for signing by hand). A build for a platform PLATFORMS has no row for (no Oscairn host
         to play it on) is left out of the candidate and said so, in the output, notice.txt and
-        plan.json's notImported; a release with no other build is refused.
+        plan.json's notImported; a release with no other build is refused. The packages the
+        manifest's dependencies.packages names must be here (not yanked, at that version or later),
+        none the package itself, and none that needs the package back, directly or through others.
+        An `init` (an init library archive and the Sound in it) is fetched and verified like a build;
+        it stays in the candidate for plugin-check and is never put in the package.
     import-release.py plugin-check --candidate <candidate> --platform <p> --plugin-check <tool>
-        Plays each plugin of that platform's build through oscairn-plugin-check, on that platform.
+        Plays each plugin of that platform's build through oscairn-plugin-check, on that platform
+        (with --library <init library> --sound <Sound> when the manifest has an `init`).
     import-release.py sign --candidate <candidate> --key <key> --oscairn-sign <tool>
         What sign.sh does: signs each build and packs and signs the archive. Nothing else sees the key.
     import-release.py record --candidate <candidate> --oscairn-sign <tool> [--packages .]
@@ -304,6 +309,47 @@ def previous_license_files(path, record, temp):
     return {name[len("Licenses/"):]: digest for name, digest in files.items() if name.startswith("Licenses/")}
 
 
+# Package dependencies -----------------------------------------------------------------------
+
+def live_releases(packages, package_id):
+    """The package's records here that are not yanked, newest first: (version, record)."""
+    records = []
+    for path in (packages / "packages" / package_id).glob("*.json"):
+        r = json.loads(path.read_bytes())
+        if r.get("yanked") is None:
+            records.append((r["release"], r))
+    return sorted(records, key=lambda x: version_key(x[0]), reverse=True)
+
+
+def package_dependency_problems(packages, package_id, needs):
+    """As build-index.py checks `dependencies.packages` (each package here, of any kind, not yanked, at
+    that version or later), and that none is the package itself or needs it back: the device
+    refuses a cycle when it installs, and a release that makes one should not be published."""
+    problems = []
+    for need in needs:
+        if need["id"] == package_id:
+            problems.append(f"{package_id} cannot depend on itself (dependencies.packages names it)")
+            continue
+        have = live_releases(packages, need["id"])
+        if not any(version_key(v) >= version_key(need["version"]) for v, _ in have):
+            problems.append(f"needs the package {need['id']} {need['version']} or later, which this repository does not have")
+            continue
+        # The newest release of it, and of what it needs in turn: does the chain come back to this package?
+        seen, stack = set(), [(need["id"], [package_id, need["id"]])]
+        while stack:
+            current, chain = stack.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            releases = live_releases(packages, current)
+            for further in (releases[0][1].get("dependencies", {}).get("packages", []) if releases else []):
+                if further.get("id") == package_id:
+                    problems.append(f"a cycle of package dependencies: {' -> '.join(chain + [package_id])}")
+                else:
+                    stack.append((further.get("id"), chain + [further.get("id")]))
+    return problems
+
+
 # verify --------------------------------------------------------------------------------------
 
 def where_from(args):
@@ -345,6 +391,8 @@ def commands(plan, key, tool):
     package += ["--source", plan["source"]["url"], plan["source"]["revision"]]
     for d in plan["dependencies"]:
         package += ["--asset-dependency", d["id"], d["version"]]
+    for d in plan.get("packageDependencies", []):
+        package += ["--package-dependency", d["id"], d["version"]]
     for p in plan["plugins"]:
         package += ["--plugin", f"{p['id']}@{p['version']}", p["name"]]
     package += [plan["archive"], "clap", plan["id"], plan["version"], plan["name"]]
@@ -386,6 +434,11 @@ def verify(args):
     packages = Path(args.packages)
     if (packages / "packages" / package["id"] / f"{package['version']}.json").exists():
         problems.append(f"{package['id']} {package['version']} is here already: a version never changes once merged")
+    package_needs = manifest.get("dependencies", {}).get("packages", [])
+    problems += package_dependency_problems(packages, package["id"], package_needs)
+    init = manifest.get("init")
+    if init and init["library"]["file"] in {MANIFEST, LICENSES, *(b["file"] for b in manifest["builds"])}:
+        problems.append(f"init.library.file {init['library']['file']} is also another file of the release")
     if problems:
         raise Refused("\n".join(problems))
     commit = resolve_tag(source["url"], source["tag"], args.git_base)
@@ -401,6 +454,27 @@ def verify(args):
             problems.append(f"{b['file']} is not the size and SHA-256 the manifest gives")
             continue
         problems += [f"{b['platform']} build {b['file']} {p}" for p in library_problems(path, b["platform"])]
+    init_path = None
+    if init:
+        # The init library, fetched and checked as a build is; it is only played at plugin-check and
+        # is not part of the package (a library package of its own, which dependencies.packages names).
+        library = init["library"]
+        init_path = out / "init" / library["file"]
+        init_path.parent.mkdir()
+        download(base + library["file"], init_path, library["size"])
+        if init_path.stat().st_size != library["size"] or sha256_file(init_path) != library["sha256"]:
+            problems.append(f"{library['file']} (init library) is not the size and SHA-256 the manifest gives")
+        else:
+            try:
+                with zipfile.ZipFile(init_path) as z:
+                    if z.getinfo("library.json").file_size > MAX_MANIFEST:
+                        raise ValueError("its library.json is over 1 MiB")
+                    held = json.loads(z.read("library.json")).get("id")
+            except (zipfile.BadZipFile, KeyError, ValueError) as e:
+                problems.append(f"{library['file']} (init library) is not a library archive: {e}")
+            else:
+                if held not in [n["id"] for n in package_needs]:
+                    problems.append(f"the init library is {held}, which the manifest's dependencies.packages does not name: the package must need its init library")
     download(base + LICENSES, out / LICENSES, 64 << 20)
     with tarfile.open(out / LICENSES, "r:gz") as tar:
         names = {m.name.removeprefix("./"): m for m in tar.getmembers()}
@@ -438,6 +512,8 @@ def verify(args):
         "license": manifest["license"], "licenseFiles": [f["file"] for f in manifest["licenseFiles"]],
         "source": {"url": source["url"], "revision": source["revision"]}, "tag": source["tag"],
         "dependencies": manifest.get("dependencies", {}).get("assets", []),
+        "packageDependencies": package_needs,
+        **({"init": {"library": f"init/{init['library']['file']}", "sound": init["sound"]}} if init else {}),
         "plugins": manifest["plugins"],
         "builds": [{"platform": b["platform"], "path": f"builds/{b['platform']}/{b['file']}"} for b in builds],
         "notImported": left_out,
@@ -473,8 +549,10 @@ def plugin_check(args):
     problems = []
     for p in plan["plugins"]:
         # A fresh process for each, with a time limit; the runner (or your machine) bounds its memory.
-        run = subprocess.run([args.plugin_check, str(candidate / build["path"]), p["id"], "synth" if p["kind"] == "synth" else "effect"],
-                             capture_output=True, text=True, timeout=PLUGIN_CHECK_SECONDS)
+        command = [args.plugin_check, str(candidate / build["path"]), p["id"], "synth" if p["kind"] == "synth" else "effect"]
+        if plan.get("init"):  # an instrument that needs content: the init library's Sound makes its part
+            command += ["--library", str(candidate / plan["init"]["library"]), "--sound", plan["init"]["sound"]]
+        run = subprocess.run(command, capture_output=True, text=True, timeout=PLUGIN_CHECK_SECONDS)
         print(run.stdout + run.stderr)
         noted = "a note effect:" in run.stdout
         if run.returncode != 0:
@@ -524,8 +602,8 @@ def record(args):
     r = {"format": "oscairn.repository-release", "version": 1, "id": plan["id"], "release": plan["version"], "publisher": plan["publisher"],
          "summary": plan["summary"], "license": plan["license"], "tags": plan["tags"], "channel": plan["channel"],
          "platforms": sorted(b["platform"] for b in plan["builds"]), "source": plan["source"]}
-    if plan["dependencies"]:
-        r["dependencies"] = {"assets": plan["dependencies"]}
+    if plan["dependencies"] or plan["packageDependencies"]:
+        r["dependencies"] = {"assets": plan["dependencies"], **({"packages": plan["packageDependencies"]} if plan["packageDependencies"] else {})}
     r["archive"] = {"path": f"{plan['version']}.olib", "sha256": sha256_file(olib), "size": size}
     r["yanked"] = None
     (folder / f"{plan['version']}.json").write_text(json.dumps(r, indent=2, ensure_ascii=False) + "\n")

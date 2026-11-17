@@ -97,7 +97,40 @@
               "version": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9.+_-]{0,63}$" }
             }
           }
+        },
+        "packages": {
+          "description": "Packages of any kind the package needs, each at that version or later (installed with it, depth first)",
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "required": ["id", "version"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]+(\\.[A-Za-z0-9_-]+)+$", "maxLength": 128 },
+              "version": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9.+_-]{0,63}$" }
+            }
+          }
         }
+      }
+    },
+    "init": {
+      "description": "For an instrument that is silent until it has content: a library archive shipped as a release file, and the Sound in it that oscairn-plugin-check plays (--library, --sound). It is not put in the package; the library is a package of its own that dependencies.packages names",
+      "type": "object",
+      "required": ["library", "sound"],
+      "additionalProperties": false,
+      "properties": {
+        "library": {
+          "type": "object",
+          "required": ["file", "sha256", "size"],
+          "additionalProperties": false,
+          "properties": {
+            "file": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+            "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "size": { "type": "integer", "minimum": 1, "maximum": 1992294400 }
+          }
+        },
+        "sound": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@+/-]{0,255}$" }
       }
     },
     "clap": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
