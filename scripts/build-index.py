@@ -405,14 +405,46 @@ def read_release(path, root, publishers, tool, cache, problems):
     }
 
 
-def unchanged(previous, root, problems):
-    """Published releases never change, but for `yanked`; a publisher's key never changes."""
+def read_removed(root, problems):
+    """removed.json: the versions maintainers deleted on purpose, as {(id, version)}. Each names
+    no release still here: a removal is deletion, and a listed version is never published again."""
+    path, before = root / "removed.json", len(problems)
+    removed = load(path, problems) if path.exists() else None
+    if removed is None:
+        return set()
+    if removed.get("format") != "oscairn.repository-removals" or removed.get("version") != 1 or set(removed) != {"format", "version", "versions"} \
+            or not isinstance(removed["versions"], list):
+        problems.add("removed.json", "is not an oscairn.repository-removals version 1 document with a `versions` list")
+        return set()
+    listed = set()
+    for n, e in enumerate(removed["versions"]):
+        where = f"removed.json: versions[{n}]"
+        if not isinstance(e, dict) or set(e) != {"id", "version", "reason", "date"}:
+            problems.add(where, "needs exactly `id`, `version`, `reason` and `date`")
+            continue
+        if not (isinstance(e["id"], str) and ID.match(e["id"]) and isinstance(e["version"], str) and VERSION.match(e["version"])):
+            problems.add(where, "`id` or `version` is not shaped as a release's")
+        elif (e["id"], e["version"]) in listed:
+            problems.add(where, "is listed twice")
+        elif (root / "packages" / e["id"] / f"{e['version']}.json").exists():
+            problems.add(where, f"{e['id']} {e['version']} is listed as removed but its release is here")
+        listed.add((e["id"], e["version"]))
+        if not (isinstance(e["reason"], str) and e["reason"].strip()) or not (isinstance(e["date"], str) and DATE.match(e["date"]) and valid_date(e["date"])):
+            problems.add(where, "needs a non-empty `reason` and a real `date` (YYYY-MM-DD)")
+    return listed if len(problems) == before else set()
+
+
+def unchanged(previous, root, problems, removed=frozenset()):
+    """Published releases never change, but for `yanked`, and never disappear unless removed.json
+    lists them; a publisher's key never changes."""
     for old_path in sorted((previous / "packages").glob("*/*.json")):
         new_path = root / "packages" / old_path.relative_to(previous / "packages")
         old = load(old_path, problems)
         new = load(new_path, problems) if new_path.is_file() else None
+        if new is None and (old_path.parent.name, old_path.stem) in removed:
+            continue
         if new is None:
-            problems.add(new_path, "a published release was removed; yank it instead")
+            problems.add(new_path, "a published release was removed; yank it instead, or list it in removed.json (a maintainer's decision)")
         elif old is not None and {k: v for k, v in old.items() if k != "yanked"} != {k: v for k, v in new.items() if k != "yanked"}:
             problems.add(new_path, "a published release changed; publish a new version instead")
     for old_path in sorted((previous / "publishers").glob("*.json")):
@@ -596,8 +628,9 @@ def main():
         problems.add("repository-config.json", "`exportDownload` is not an https:// address ending in `-` (the tag's start, as `blobBase`)")
     if not args.check or config.get("rootKey"):
         check_delegation(config, args.oscairn_sign, problems)
+    removed = read_removed(root, problems)
     if args.previous:
-        unchanged(args.previous, root, problems)
+        unchanged(args.previous, root, problems, removed)
 
     publishers = read_publishers(root, problems)
     packages = {}
