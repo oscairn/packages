@@ -11,7 +11,10 @@ import-release.py sign and by the candidate's sign.sh, and record; the archive m
 `oscairn-sign verify` and build-index.py --check. Then a tampered hash, a changed license file,
 a macOS build with an LC_RPATH, a Linux build with a RUNPATH and too new a glibc, and a tag that
 is not the manifest's revision are each refused, as is a tag not vX.Y.Z or oscairn-vX.Y.Z of the
-package's version. The key lives only in a temporary folder.
+package's version. Dependencies on other packages (dependencies.packages: present, missing, yanked,
+itself, a cycle) and an init library (fetched, verified, passed to the check as --library and --sound
+through a stand-in for oscairn-plugin-check) are covered too, as are unknown keys. The key lives only
+in a temporary folder.
 """
 import functools
 import hashlib
@@ -276,6 +279,127 @@ def main(tool, plugin_check=None):
             check(result.returncode == 1 and "--tag vX.Y.Z or oscairn-vX.Y.Z" in result.stderr, f"--tag {tag} is refused: " + result.stderr)
             result = run(sys.executable, "-I", SCRIPT, "verify", "--release", f"https://github.com/oscairn/arpeggiator/releases/tag/{tag}", "--out", temp / "unused")
             check(result.returncode == 1 and "is not https://github.com/oscairn/<fork>/releases/tag/" in result.stderr, f"a release at {tag} is refused: " + result.stderr)
+        # Dependencies on packages of any kind. Another package here: a record is enough for the import's
+        # check (build-index.py checks the archive when it is merged).
+        def record_of(package_id, release_, needs=(), yanked=None):
+            folder = packages / "packages" / package_id
+            folder.mkdir(exist_ok=True)
+            r = {"id": package_id, "release": release_, "yanked": yanked}
+            if needs:
+                r["dependencies"] = {"assets": [], "packages": list(needs)}
+            (folder / f"{release_}.json").write_text(json.dumps(r))
+
+        def needing(*needs):
+            return lambda m: m["dependencies"].update(packages=[{"id": i, "version": v} for i, v in needs])
+
+        record_of("org.oscairn.sample-types", "1.0.0")
+        release(change=needing(("org.oscairn.sample-types", "1.0.0")))
+        candidate, result = verify()
+        plan = json.loads((candidate / "plan.json").read_bytes())
+        check(result.returncode == 0 and plan["packageDependencies"] == [{"id": "org.oscairn.sample-types", "version": "1.0.0"}]
+              and "--package-dependency org.oscairn.sample-types 1.0.0" in (candidate / "sign.sh").read_text(),
+              "a dependency on a package here verifies and is in the plan and sign.sh: " + result.stdout + result.stderr)
+        recorded = temp / "packages-recorded"
+        shutil.copytree(packages, recorded)
+        result = run(sys.executable, "-I", SCRIPT, "sign", "--candidate", candidate, "--key", temp / "keys" / "test.key", "--oscairn-sign", tool)
+        check(result.returncode == 0, "it signs: " + result.stdout + result.stderr)
+        result = run(sys.executable, "-I", SCRIPT, "record", "--candidate", candidate, "--oscairn-sign", tool, "--packages", recorded)
+        r = json.loads((recorded / "packages" / "org.oscairn.arpeggiator" / "0.1.5.json").read_bytes()) if result.returncode == 0 else {}
+        check(r.get("dependencies") == {"assets": [], "packages": [{"id": "org.oscairn.sample-types", "version": "1.0.0"}]},
+              "the record carries dependencies.packages beside dependencies.assets: " + result.stdout + result.stderr + json.dumps(r.get("dependencies")))
+        release(change=needing(("org.oscairn.sample-types", "1.0.0"), ("org.oscairn.sample-types", "0.9")))
+        _, result = verify()
+        check(result.returncode == 0, "a version already here or earlier verifies: " + result.stderr)
+        release(change=needing(("org.oscairn.sample-types", "1.1.0")))
+        _, result = verify()
+        check(result.returncode == 1 and "needs the package org.oscairn.sample-types 1.1.0 or later, which this repository does not have" in result.stderr,
+              "a version later than any here is refused, naming it: " + result.stderr)
+        release(change=needing(("org.oscairn.nothing", "1.0.0")))
+        _, result = verify()
+        check(result.returncode == 1 and "needs the package org.oscairn.nothing 1.0.0 or later" in result.stderr, "a missing package is refused, naming it: " + result.stderr)
+        record_of("org.oscairn.yanked", "1.0.0", yanked="broken")
+        release(change=needing(("org.oscairn.yanked", "1.0.0")))
+        _, result = verify()
+        check(result.returncode == 1 and "needs the package org.oscairn.yanked 1.0.0" in result.stderr, "a yanked package is refused: " + result.stderr)
+        release(change=needing(("org.oscairn.arpeggiator", "0.1.4")))
+        _, result = verify()
+        check(result.returncode == 1 and "org.oscairn.arpeggiator cannot depend on itself" in result.stderr, "a package that names itself is refused: " + result.stderr)
+        record_of("org.oscairn.sample-types", "1.0.0", needs=[{"id": "org.oscairn.other", "version": "1.0"}])
+        record_of("org.oscairn.other", "1.0", needs=[{"id": "org.oscairn.arpeggiator", "version": "0.1.4"}])
+        release(change=needing(("org.oscairn.sample-types", "1.0.0")))
+        _, result = verify()
+        check(result.returncode == 1 and "a cycle of package dependencies: org.oscairn.arpeggiator -> org.oscairn.sample-types -> org.oscairn.other -> org.oscairn.arpeggiator" in result.stderr,
+              "a package that makes a cycle is refused: " + result.stderr)
+        record_of("org.oscairn.sample-types", "1.0.0")
+        shutil.rmtree(packages / "packages" / "org.oscairn.other")
+        shutil.rmtree(packages / "packages" / "org.oscairn.yanked")
+
+        for what, change in (("an unknown key in the manifest", lambda m: m.update(extra=1)),
+                             ("an unknown key in dependencies", lambda m: m["dependencies"].update(extra=[])),
+                             ("an unknown key in a package dependency", lambda m: m["dependencies"].update(packages=[{"id": "org.oscairn.sample-types", "version": "1.0.0", "range": ">1"}])),
+                             ("a package dependency without a version", lambda m: m["dependencies"].update(packages=[{"id": "org.oscairn.sample-types"}])),
+                             ("an unknown key in init", lambda m: m.update(init={"library": {"file": "a.olib", "sha256": "0" * 64, "size": 1}, "sound": "x", "extra": 1})),
+                             ("an unknown key in init.library", lambda m: m.update(init={"library": {"file": "a.olib", "sha256": "0" * 64, "size": 1, "url": "x"}, "sound": "x"})),
+                             ("an init without a Sound", lambda m: m.update(init={"library": {"file": "a.olib", "sha256": "0" * 64, "size": 1}}))):
+            release(change=change)
+            _, result = verify()
+            check(result.returncode == 1 and "the manifest is not valid" in result.stderr, f"{what} is refused: " + result.stderr.strip())
+
+        # An init library: fetched and checked as a build, kept in the candidate, passed to the check on
+        # every platform, and in no package.
+        def library_of(package_id):
+            buffer = io.BytesIO()
+            with zipfile.ZipFile(buffer, "w") as z:
+                z.writestr("library.json", json.dumps({"format": "oscairn.library", "version": 3, "id": package_id}))
+            return buffer.getvalue()
+
+        content = library_of("org.oscairn.sample-content")
+        record_of("org.oscairn.sample-content", "1.0.0")
+
+        def with_init(data=content, sound="org.oscairn.sample-content.piano", sha=None, needs=(("org.oscairn.sample-content", "1.0.0"),), file="init-library.olib"):
+            def change(m):
+                (served / file).write_bytes(data)
+                m["init"] = {"library": {"file": file, "sha256": sha or hashlib.sha256(data).hexdigest(), "size": len(data)}, "sound": sound}
+                needing(*needs)(m)
+            return change
+
+        stub = temp / "stub-plugin-check"
+        stub.write_text(f"#!{sys.executable}\nimport json, sys\nopen({str(temp / 'stub-calls')!r}, 'a').write(json.dumps(sys.argv[1:]) + '\\n')\nprint('a note effect: notes out')\n")
+        stub.chmod(0o755)
+        calls = temp / "stub-calls"
+
+        release(change=with_init())
+        candidate, result = verify()
+        plan = json.loads((candidate / "plan.json").read_bytes())
+        check(result.returncode == 0 and (candidate / "init" / "init-library.olib").read_bytes() == content
+              and plan["init"] == {"library": "init/init-library.olib", "sound": "org.oscairn.sample-content.piano"}
+              and "init-library" not in (candidate / "sign.sh").read_text() and "piano" not in (candidate / "sign.sh").read_text(),
+              "an init library is fetched into the candidate and kept out of sign.sh: " + result.stdout + result.stderr)
+        calls.unlink(missing_ok=True)
+        result = run(sys.executable, "-I", SCRIPT, "plugin-check", "--candidate", candidate, "--platform", "macos-arm64", "--plugin-check", stub)
+        argv = json.loads(calls.read_text().splitlines()[0]) if calls.exists() else []
+        check(result.returncode == 0 and argv[-4:] == ["--library", str(candidate.resolve() / "init" / "init-library.olib"), "--sound", "org.oscairn.sample-content.piano"],
+              "plugin-check passes --library and --sound to oscairn-plugin-check: " + json.dumps(argv) + result.stdout + result.stderr)
+        release()
+        candidate, result = verify()
+        calls.unlink(missing_ok=True)
+        result = run(sys.executable, "-I", SCRIPT, "plugin-check", "--candidate", candidate, "--platform", "macos-arm64", "--plugin-check", stub)
+        argv = json.loads(calls.read_text().splitlines()[0]) if calls.exists() else []
+        check(result.returncode == 0 and "--library" not in argv and "--sound" not in argv and "init" not in json.loads((candidate / "plan.json").read_bytes()),
+              "without init, neither is passed: " + json.dumps(argv))
+        release(change=with_init(sha="1" * 64))
+        _, result = verify()
+        check(result.returncode == 1 and "init library) is not the size and SHA-256 the manifest gives" in result.stderr, "a tampered init library is refused: " + result.stderr)
+        release(change=with_init(data=b"not an archive"))
+        _, result = verify()
+        check(result.returncode == 1 and "is not a library archive" in result.stderr, "an init library that is not an archive is refused: " + result.stderr)
+        release(change=with_init(needs=(("org.oscairn.sample-types", "1.0.0"),)))
+        _, result = verify()
+        check(result.returncode == 1 and "the init library is org.oscairn.sample-content, which the manifest's dependencies.packages does not name" in result.stderr,
+              "an init library its package does not need is refused: " + result.stderr)
+        release(change=with_init(file="oscairn-release.json"))
+        _, result = verify()
+        check(result.returncode == 1 and "is also another file of the release" in result.stderr, "an init file named as the manifest is refused: " + result.stderr)
         server.shutdown()
     finally:
         shutil.rmtree(temp, ignore_errors=True)

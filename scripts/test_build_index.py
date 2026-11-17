@@ -1,0 +1,411 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""This repository's index builder (RFC 0031) on a sample tree.
+
+usage: test_build_index.py <oscairn-sign>
+
+Makes throwaway keys, a signed archive with one plugin build, a publisher and a release, builds
+the index, signs and checks the root with oscairn-sign, and checks that a bad release, a changed
+release and a tampered root are each refused. Each release is split into pieces, deduplicated
+across versions, and a ready-made archive per platform is assembled from them and checked
+(RFC 0031). Keys live only in a temporary folder.
+"""
+import gzip
+import importlib.util
+import hashlib
+import json
+import shutil
+import struct
+import subprocess
+import sys
+import tempfile
+import zipfile
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+SOURCE = {"url": "https://example.com/organ.git", "revision": "v2.1.0"}
+BUILDER = HERE / "build-index.py"
+failures = 0
+
+
+def check(ok, what):
+    global failures
+    print(("ok   " if ok else "FAIL ") + what)
+    failures += not ok
+
+
+def run(*command):
+    return subprocess.run([str(c) for c in command], capture_output=True, text=True, timeout=300)
+
+
+def main(tool):
+    temp = Path(tempfile.mkdtemp(prefix="oscairn-repo-test-"))
+    try:
+        keys = temp / "keys"
+        made = {}
+        for name in ("publisher", "root", "index"):
+            out = run(tool, "key", keys / f"{name}.key")
+            assert out.returncode == 0, out.stderr
+            _, key_id, public = out.stdout.split()
+            made[name] = (key_id, public)
+
+        # A signed archive: one CLAP build for linux-arm64, signed by the publisher, and the whole.
+        def archive(path, signed=True, key="publisher", plugin="com.example.organ", content=b"not really a plugin", absent=None):
+            build = temp / "Organ.clap"
+            build.write_bytes(content)
+            Path(str(build) + ".sig").unlink(missing_ok=True)
+            out = run(tool, "build", keys / f"{key}.key", "clap", plugin, "2.1.0", "linux-arm64", build)
+            assert out.returncode == 0, out.stderr
+            digest = out.stdout.split()[5]
+            inside = f"Plugins/clap/{plugin}@2.1.0/linux-arm64/Organ.clap"
+            copying = b"GNU GENERAL PUBLIC LICENSE\n"
+            manifest = {
+                "format": "oscairn.library", "version": 3, "id": plugin, "name": "Example Organ", "kind": "plugin",
+                "license": "GPL-3.0-or-later", "source": SOURCE,
+                "items": [],
+                "plugins": [{"format": "clap", "id": plugin, "version": "2.1.0", "name": "Example Organ", "builds": [
+                    {"platform": "linux-arm64", "path": inside, "sha256": digest,
+                     "signatures": json.loads(Path(str(build) + ".sig").read_text()) if signed else []}] +
+                    ([{"platform": absent, "path": inside.replace("linux-arm64", absent), "sha256": digest, "signatures": []}] if absent else [])}],
+                "files": {inside: hashlib.sha256(build.read_bytes()).hexdigest(), "Licenses/COPYING": hashlib.sha256(copying).hexdigest()},
+            }
+            with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+                z.writestr("library.json", json.dumps(manifest))
+                z.write(build, inside)
+                z.writestr("Licenses/COPYING", copying)
+            if signed:
+                out = run(tool, "archive", keys / f"{key}.key", path)
+                assert out.returncode == 0, out.stderr
+            return path
+
+        # A submissions repository like this one, with no packages or publishers yet.
+        repo = temp / "packages-repo"
+        for folder in ("packages", "publishers"):
+            (repo / folder).mkdir(parents=True)
+        for name in ("repository-config.json", "revoked.json"):
+            shutil.copy(HERE.parent / name, repo / name)
+        signature = temp / "index-key.sig"
+        (temp / "index-key.pub").write_text(made["index"][1] + "\n")
+        out = run(tool, "file", keys / "root.key", temp / "index-key.pub", signature)
+        check(out.returncode == 0, "the root key signs the index key: " + out.stderr.strip())
+        config = json.loads((repo / "repository-config.json").read_text())
+        config.update(rootKey=made["root"][1], indexKey={"key": made["index"][1], "signature": json.loads(signature.read_text())[0]["signature"]})
+        (repo / "repository-config.json").write_text(json.dumps(config))
+        (repo / "publishers" / "com.example.json").write_text(json.dumps({
+            "format": "oscairn.repository-publisher", "version": 1, "id": "com.example", "name": "Example Audio",
+            "key": made["publisher"][1], "verification": "https://example.com/.well-known/oscairn-publisher.json"}))
+        release_dir = repo / "packages" / "com.example.organ"
+        release_dir.mkdir()
+        olib = archive(release_dir / "2.1.0.olib")
+        data = olib.read_bytes()
+        release = {
+            "format": "oscairn.repository-release", "version": 1, "id": "com.example.organ", "release": "2.1.0",
+            "publisher": "com.example", "summary": "A tonewheel organ", "license": "GPL-3.0-or-later", "tags": ["organ"],
+            "platforms": ["linux-arm64"], "source": SOURCE,
+            "archive": {"path": "2.1.0.olib", "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}, "yanked": None}
+        (release_dir / "2.1.0.json").write_text(json.dumps(release))
+
+        def build(out_dir, *extra):
+            return run(sys.executable, "-I", BUILDER, "--repo", repo, "--oscairn-sign", tool, "--cache", temp / "cache", "--out", out_dir, "--serial", "7",
+                       "--exports", Path(str(out_dir) + "-exports"), *extra)
+
+        def pieces_of(cache, version):
+            return json.loads((cache / version["pieces"]["sha256"]).read_bytes())["pieces"]
+
+        # A good build.
+        site = temp / "site"
+        out = build(site)
+        check(out.returncode == 0, "a good tree builds: " + out.stderr.strip())
+        root = json.loads((site / "repository.json").read_text())
+        gz = (site / root["index"]["path"]).read_bytes()
+        check(hashlib.sha256(gz).hexdigest() == root["index"]["sha256"] and len(gz) == root["index"]["size"] and root["index"]["path"] == f"index/{root['index']['sha256']}.json.gz",
+              "the root names the index by its hash and size")
+        index = json.loads(gzip.decompress(gz))
+        package = index["packages"][0]
+        version = package["versions"][0]
+        with zipfile.ZipFile(olib) as z:
+            manifest = z.read("library.json")
+        check(index["format"] == "oscairn.repository-index" and index["serial"] == 7 and root["serial"] == 7, "the index and root carry the serial")
+        check(package["id"] == "com.example.organ" and package["name"] == "Example Organ" and package["publisher"]["key"] == made["publisher"][0],
+              "the package, its name from the manifest and its publisher's fingerprint")
+        check(version["manifest"] == {"sha256": hashlib.sha256(manifest).hexdigest(), "size": len(manifest)}, "the version names its manifest by hash")
+        check(version["types"] == {"clap": 1} and set(version["platforms"]) == {"linux-arm64"} and version["platforms"]["linux-arm64"]["installed"] == len(b"not really a plugin"),
+              "types and per-platform sizes: " + json.dumps(version["platforms"]))
+        rev = (site / root["revocations"]["path"]).read_bytes()
+        check(hashlib.sha256(rev).hexdigest() == root["revocations"]["sha256"] and json.loads(rev)["format"] == "oscairn.repository-revocations", "the revocation list, by hash")
+        # In pieces (RFC 0031): the manifest, its signature, the licenses and the build, each a blob
+        # by its hash, listed in the pieces list the version names; no whole archive.
+        listed = pieces_of(temp / "cache", version)
+        with zipfile.ZipFile(olib) as z:
+            signature_bytes = z.read("library.sig")
+        check([(p["type"], p["path"], p.get("platform")) for p in listed] == [("file", "library.json", None), ("file", "library.sig", None), ("zip", "Licenses", None),
+              ("zip", "Plugins/clap/com.example.organ@2.1.0/linux-arm64/Organ.clap", "linux-arm64")] and "archive" not in version,
+              "a release is its manifest, signature, licenses and build as pieces: " + json.dumps(listed))
+        check(listed[0]["sha256"] == hashlib.sha256(manifest).hexdigest() and (temp / "cache" / listed[1]["sha256"]).read_bytes() == signature_bytes and
+              all(hashlib.sha256((temp / "cache" / p["sha256"]).read_bytes()).hexdigest() == p["sha256"] and (temp / "cache" / p["sha256"]).stat().st_size == p["size"] for p in listed),
+              "each piece is in the cache by its hash and size, the manifest and signature as themselves")
+        check(sorted((site / "blobs.txt").read_text().split()) == sorted([version["pieces"]["sha256"]] + [p["sha256"] for p in listed]),
+              "every piece and the pieces list are listed for upload")
+        check(version["platforms"]["linux-arm64"]["size"] == listed[3]["size"] and version["common"] == {"size": sum(p["size"] for p in listed[:3]), "installed": sum(p["installed"] for p in listed[:3])},
+              "the sizes are the pieces', the build's apart from the shared part: " + json.dumps({k: version[k] for k in ("platforms", "common")}))
+        with zipfile.ZipFile(temp / "cache" / listed[3]["sha256"]) as z:
+            check([(i.filename, i.date_time) for i in z.infolist()] == [("Plugins/clap/com.example.organ@2.1.0/linux-arm64/Organ.clap", (1980, 1, 1, 0, 0, 0))],
+                  "a zip piece holds its entries at their archive paths, dated 1980-01-01")
+        # Its ready-made archive for linux-arm64: the archive's entries, the manifest and signature
+        # unchanged, checked by oscairn-sign; and a page at its stable address.
+        export = temp / "site-exports" / "com.example.organ-2.1.0-linux-arm64.olib"
+        with zipfile.ZipFile(olib) as z, zipfile.ZipFile(export) as e:
+            same = sorted(z.namelist()) == sorted(e.namelist()) and all(z.read(n) == e.read(n) for n in z.namelist())
+        out = run(tool, "verify", "--platform", "linux-arm64", export)
+        page = (site / "exports" / "com.example.organ" / "2.1.0" / export.name / "index.html").read_text()
+        check(same and out.returncode == 0 and f"archive com.example.organ {made['publisher'][0]}" in out.stdout and "noExport" not in version and
+              "url=https://github.com/oscairn/packages/releases/download/exports-com.example.organ/com.example.organ-2.1.0-linux-arm64.olib" in page and
+              (site / "exports.txt").read_text() == f"com.example.organ {export.name}\n",
+              "the ready-made archive holds the release's entries byte for byte and verifies, with a page at its stable address: " + out.stderr)
+        check(root["indexKey"]["key"] == made["index"][1] and root["rootKey"] == made["root"][1], "the root carries the root key and the delegated index key")
+        check(build(temp / "again").returncode == 0 and (temp / "again" / "repository.json").read_bytes() == (site / "repository.json").read_bytes(), "the build is reproducible")
+
+        # The root, signed by the index key and checked; a changed root is refused.
+        out = run(tool, "file", keys / "index.key", site / "repository.json", site / "repository.sig")
+        check(out.returncode == 0, "oscairn-sign file signs the root")
+        out = run(tool, "verify-file", site / "repository.json", site / "repository.sig")
+        check(out.returncode == 0 and out.stdout.split()[1] == made["index"][0], "oscairn-sign verify-file says the index key signed it")
+
+        # A delta from the index published last: the changed package's record, whole.
+        def built(out_dir, serial, *extra):
+            return run(sys.executable, "-I", BUILDER, "--repo", repo, "--oscairn-sign", tool, "--cache", temp / "cache", "--out", out_dir, "--serial", str(serial), *extra)
+        (release_dir / "2.1.0.json").write_text(json.dumps(dict(release, yanked="breaks presets")))
+        out = built(temp / "next", 8, "--previous-site", site)
+        nxt = json.loads((temp / "next" / "repository.json").read_text())
+        deltas = nxt.get("deltas", [])
+        change = json.loads(gzip.decompress((temp / "next" / deltas[0]["path"]).read_bytes())) if len(deltas) == 1 else {}
+        check(out.returncode == 0 and len(deltas) == 1 and deltas[0]["from"] == 7 and deltas[0]["path"] == f"index/{deltas[0]['sha256']}.delta.gz" and
+              hashlib.sha256((temp / "next" / deltas[0]["path"]).read_bytes()).hexdigest() == deltas[0]["sha256"],
+              "the root names a delta from serial 7 by its hash: " + out.stderr.strip())
+        check(change.get("format") == "oscairn.repository-delta" and change["from"] == 7 and change["serial"] == 8 and change["removed"] == [] and
+              [p["versions"][0]["yanked"] for p in change["packages"]] == ["breaks presets"], "the delta holds the changed record, whole")
+        unsigned_site = temp / "unsigned-site"
+        shutil.copytree(site, unsigned_site)
+        (unsigned_site / "repository.sig").unlink()
+        check(built(temp / "nodelta", 8, "--previous-site", unsigned_site).returncode == 0 and "deltas" in json.loads((temp / "nodelta" / "repository.json").read_text()) and
+              json.loads((temp / "nodelta" / "repository.json").read_text())["deltas"] == [], "no delta from a previous root that does not verify")
+        (release_dir / "2.1.0.json").write_text(json.dumps(release))
+        (site / "repository.json").write_bytes((site / "repository.json").read_bytes().replace(b'"serial":7', b'"serial":9'))
+        check(run(tool, "verify-file", site / "repository.json", site / "repository.sig").returncode != 0, "a changed root is refused")
+
+        # A delegation signed by the wrong key is refused, and --check does not need keys.
+        bad = dict(config, rootKey=made["publisher"][1])
+        (repo / "repository-config.json").write_text(json.dumps(bad))
+        out = build(temp / "bad-delegation")
+        check(out.returncode != 0 and "index key does not verify" in out.stderr, "an index key not signed by the root key is refused")
+        (repo / "repository-config.json").write_text(json.dumps(dict(config, rootKey="", indexKey={})))
+        check(build(temp / "nokeys").returncode != 0, "a build to publish needs the keys")
+        check(build(temp / "nokeys-check", "--check").returncode == 0, "a pull request's check does not")
+        (repo / "repository-config.json").write_text(json.dumps(config))
+
+        # A published release never changes, but for yanked.
+        previous = temp / "previous"
+        shutil.copytree(repo, previous)
+        (release_dir / "2.1.0.json").write_text(json.dumps(dict(release, yanked="breaks presets")))
+        check(build(temp / "yanked", "--previous", previous).returncode == 0, "yanking a release is allowed")
+        (release_dir / "2.1.0.json").write_text(json.dumps(dict(release, summary="Changed")))
+        out = build(temp / "changed", "--previous", previous)
+        check(out.returncode != 0 and "a published release changed" in out.stderr, "changing a published release is refused")
+        (release_dir / "2.1.0.json").write_text(json.dumps(release))
+
+        # Releases each refused: a missing claimed platform, a wrong hash, an unsigned archive.
+        def refused(changed, expect, what, olib_bytes=None):
+            (release_dir / "2.1.0.json").write_text(json.dumps(changed))
+            if olib_bytes is not None:
+                olib.write_bytes(olib_bytes)
+            shutil.rmtree(temp / "cache", ignore_errors=True)
+            out = build(temp / "refused")
+            check(out.returncode != 0 and expect in out.stderr, what + ": " + out.stderr.strip())
+            (release_dir / "2.1.0.json").write_text(json.dumps(release))
+            olib.write_bytes(data)
+
+        refused(dict(release, platforms=["linux-arm64", "macos-arm64"]), "claims macos-arm64", "a claimed platform without its build is refused")
+        refused(dict(release, archive=dict(release["archive"], sha256="0" * 64)), "not the size and SHA-256", "an archive with another hash is refused")
+        unsigned = archive(temp / "unsigned.olib", signed=False).read_bytes()
+        refused(dict(release, archive=dict(release["archive"], sha256=hashlib.sha256(unsigned).hexdigest(), size=len(unsigned))),
+                "not signed by its publisher's key", "an unsigned archive is refused", unsigned)
+        refused(dict(release, publisher="org.other"), "no publishers/org.other.json", "a release from an unknown publisher is refused")
+        refused(dict(release, source=dict(SOURCE, revision="v2.1.1")), "`source` is not the archive's", "a record whose source is not the archive's is refused")
+        refused({k: v for k, v in release.items() if k != "source"}, "`source` is not the archive's", "a record without the archive's source is refused")
+        refused(dict(release, license="MIT"), "`license` is not the archive's", "a record whose license is not the archive's is refused")
+        # A build linking a Homebrew library: a 64-bit Mach-O bundle with one LC_LOAD_DYLIB.
+        name = b"/opt/homebrew/lib/libfftw3.3.dylib\0"
+        command = struct.pack("<IIIIII", 0xC, (24 + len(name) + 7) & ~7, 24, 0, 0, 0) + name
+        command += b"\0" * (((24 + len(name) + 7) & ~7) - len(command))
+        brew = archive(temp / "brew.olib", content=struct.pack("<IIIIIIII", 0xFEEDFACF, 0x0100000C, 0, 8, 1, len(command), 0, 0) + command).read_bytes()
+        refused(dict(release, archive=dict(release["archive"], sha256=hashlib.sha256(brew).hexdigest(), size=len(brew))),
+                "loads a library from outside the system and its bundle", "a build linking a Homebrew library is refused", brew)
+        refused(dict(release, archive=dict(release["archive"], size=2**31)), "under 2 GiB", "an archive too large for a release asset is refused")
+        # An archive made for one device, leaving out a build its manifest lists, is not a submission.
+        partial = archive(temp / "partial.olib", signed=False, absent="windows-x86_64").read_bytes()
+        refused(dict(release, archive=dict(release["archive"], sha256=hashlib.sha256(partial).hexdigest(), size=len(partial))),
+                "leaves out the windows-x86_64 build", "an archive leaving out a build is refused as a submission", partial)
+
+        # A package keeps its publisher, and publisher IDs do not nest: the owner of `io.github`
+        # cannot publish a new release of `io.github.alice.synth`, whose releases come from
+        # `io.github.alice` (RFC 0031's reverse-DNS case).
+        out = run(tool, "key", keys / "alice.key")
+        assert out.returncode == 0, out.stderr
+        _, _, alice_public = out.stdout.split()
+        out = run(tool, "key", keys / "other.key")
+        assert out.returncode == 0, out.stderr
+        _, _, other_public = out.stdout.split()
+        for pid, name, public in (("io.github.alice", "Alice", alice_public), ("io.github", "GitHub", other_public)):
+            (repo / "publishers" / f"{pid}.json").write_text(json.dumps({
+                "format": "oscairn.repository-publisher", "version": 1, "id": pid, "name": name,
+                "key": public, "verification": f"https://{pid}/.well-known/oscairn-publisher.json"}))
+        aliceDir = repo / "packages" / "io.github.alice.synth"
+        aliceDir.mkdir()
+        aliceOlib = archive(aliceDir / "1.0.0.olib", key="alice", plugin="io.github.alice.synth")
+        aliceData = aliceOlib.read_bytes()
+        (aliceDir / "1.0.0.json").write_text(json.dumps(dict(release, id="io.github.alice.synth", release="1.0.0", publisher="io.github.alice",
+            archive={"path": "1.0.0.olib", "sha256": hashlib.sha256(aliceData).hexdigest(), "size": len(aliceData)})))
+        otherOlib = archive(aliceDir / "2.0.0.olib", key="other", plugin="io.github.alice.synth")  # the intruder's own key
+        otherData = otherOlib.read_bytes()
+        (aliceDir / "2.0.0.json").write_text(json.dumps(dict(release, id="io.github.alice.synth", release="2.0.0", publisher="io.github",
+            archive={"path": "2.0.0.olib", "sha256": hashlib.sha256(otherData).hexdigest(), "size": len(otherData)})))
+        shutil.rmtree(temp / "cache", ignore_errors=True)
+        out = build(temp / "takeover")
+        check(out.returncode != 0 and "publisher IDs do not nest" in out.stderr, "publishers whose IDs nest are refused: " + out.stderr.strip())
+        check("keeps its publisher" in out.stderr, "another publisher's release of the same package is refused")
+        (repo / "publishers" / "io.github.json").unlink()
+        (aliceDir / "2.0.0.json").unlink()
+        check(build(temp / "whole").returncode == 0, "and the tree builds again once the newcomer is gone")
+
+        # One bundle holding two plugins, packed by oscairn-sign: each plugin's build is signed by
+        # the publisher, and the bundle counts once in the platform's size.
+        duo = temp / "Duo.clap"
+        duo.write_bytes(b"two plugins in one bundle")
+        out = run(tool, "build", keys / "publisher.key", "clap", "com.example.duo.a,com.example.duo.b", "1.0.0", "linux-arm64", duo)
+        check(out.returncode == 0 and len(out.stdout.splitlines()) == 2, "oscairn-sign signs a bundle for each of its plugins: " + out.stderr.strip())
+        duo_dir = repo / "packages" / "com.example.duo"
+        duo_dir.mkdir()
+        out = run(tool, "plugin-package", "--license", "MIT", "--key", keys / "publisher.key", "--plugin", "com.example.duo.a", "Duo A", "--plugin", "com.example.duo.b", "Duo B",
+                  duo_dir / "1.0.0.olib", "clap", "com.example.duo", "1.0.0", "Example Duo", f"linux-arm64={duo}")
+        check(out.returncode == 0, "and packs it once: " + out.stderr.strip())
+        duo_data = (duo_dir / "1.0.0.olib").read_bytes()
+        (duo_dir / "1.0.0.json").write_text(json.dumps(dict(release, id="com.example.duo", release="1.0.0", license="MIT", source=None,
+            archive={"path": "1.0.0.olib", "sha256": hashlib.sha256(duo_data).hexdigest(), "size": len(duo_data)})))
+        out = build(temp / "duo")
+        check(out.returncode == 0, "a package with two plugins in one bundle builds: " + out.stderr.strip())
+        if out.returncode == 0:
+            duo_root = json.loads((temp / "duo" / "repository.json").read_text())
+            duo_index = json.loads(gzip.decompress((temp / "duo" / duo_root["index"]["path"]).read_bytes()))
+            duo_version = next(p for p in duo_index["packages"] if p["id"] == "com.example.duo")["versions"][0]
+            check(duo_version["types"] == {"clap": 2} and duo_version["platforms"]["linux-arm64"]["installed"] == len(b"two plugins in one bundle"),
+                  "both plugins listed, the bundle counted once: " + json.dumps(duo_version["platforms"]))
+
+        # Dependencies: a plugin package needing an asset library is refused until the library is
+        # here at that version or later, and its record must name what its archive needs.
+        needy_dir = repo / "packages" / "com.example.needy"
+        needy_dir.mkdir()
+        run(tool, "build", keys / "publisher.key", "clap", "com.example.needy", "1.0.0", "linux-arm64", duo)
+        out = run(tool, "plugin-package", "--license", "MIT", "--asset-dependency", "com.example.factory", "1.2", "--key", keys / "publisher.key",
+                  needy_dir / "1.0.0.olib", "clap", "com.example.needy", "1.0.0", "Needy", f"linux-arm64={duo}")
+        check(out.returncode == 0, "a plugin package naming an asset dependency packs: " + out.stderr.strip())
+        needy_data = (needy_dir / "1.0.0.olib").read_bytes()
+        needy = dict(release, id="com.example.needy", release="1.0.0", license="MIT", source=None, dependencies={"assets": [{"id": "com.example.factory", "version": "1.2"}]},
+                     archive={"path": "1.0.0.olib", "sha256": hashlib.sha256(needy_data).hexdigest(), "size": len(needy_data)})
+        (needy_dir / "1.0.0.json").write_text(json.dumps(needy))
+        out = build(temp / "needy")
+        check(out.returncode != 0 and "needs the asset library com.example.factory 1.2 or later, which this repository does not have" in out.stderr, "a missing asset library is refused: " + out.stderr.strip())
+        factory_dir = repo / "packages" / "com.example.factory"
+        factory_dir.mkdir()
+        (temp / "factory-files").mkdir()
+        (temp / "factory-files" / "Lead.fxp").write_bytes(b"a patch")
+        for version in ("1.0", "1.3"):
+            out = run(tool, "asset-package", "--license", "MIT", "--key", keys / "publisher.key", factory_dir / f"{version}.olib", "com.example.factory", version, "Factory", temp / "factory-files")
+            check(out.returncode == 0, "oscairn-sign packs an asset package: " + out.stderr.strip())
+            data_ = (factory_dir / f"{version}.olib").read_bytes()
+            (factory_dir / f"{version}.json").write_text(json.dumps(dict(release, id="com.example.factory", release=version, license="MIT", source=None, platforms=[],
+                archive={"path": f"{version}.olib", "sha256": hashlib.sha256(data_).hexdigest(), "size": len(data_)})))
+        out = build(temp / "needy-met")
+        check(out.returncode == 0, "and the tree builds once a new enough version is here: " + out.stderr.strip())
+        if out.returncode == 0:
+            met_root = json.loads((temp / "needy-met" / "repository.json").read_text())
+            met_index = json.loads(gzip.decompress((temp / "needy-met" / met_root["index"]["path"]).read_bytes()))
+            factory = {v["version"]: v for p in met_index["packages"] if p["id"] == "com.example.factory" for v in p["versions"]}
+            shared = [{p["path"]: p["sha256"] for p in pieces_of(temp / "cache", factory[v])}["Assets"] for v in ("1.0", "1.3")]
+            listed_blobs = (temp / "needy-met" / "blobs.txt").read_text().split()
+            check(shared[0] == shared[1] and listed_blobs.count(shared[0]) == 1 and factory["1.0"]["platforms"] == {} and
+                  (temp / "needy-met-exports" / "com.example.factory-1.0.olib").is_file(),
+                  "a piece unchanged between two versions is one blob, and a package with no builds has one archive, named without a platform")
+        (needy_dir / "1.0.0.json").write_text(json.dumps({k: v for k, v in needy.items() if k != "dependencies"}))
+        out = build(temp / "needy-unnamed")
+        check(out.returncode != 0 and "`dependencies` is not the archive's" in out.stderr, "a record not naming its archive's dependencies is refused: " + out.stderr.strip())
+
+        # Dependencies on packages of any kind: refused until the package is here at that version or
+        # later, listed in the index's requires.packages after the asset libraries, and the record must
+        # name them.
+        (needy_dir / "1.0.0.json").write_text(json.dumps(needy))
+        wants_dir = repo / "packages" / "com.example.wants"
+        wants_dir.mkdir()
+        run(tool, "build", keys / "publisher.key", "clap", "com.example.wants", "1.0.0", "linux-arm64", duo)
+
+        def wants_with(package_id, version):
+            (wants_dir / "1.0.0.olib").unlink(missing_ok=True)
+            out = run(tool, "plugin-package", "--license", "MIT", "--package-dependency", package_id, version, "--key", keys / "publisher.key",
+                      wants_dir / "1.0.0.olib", "clap", "com.example.wants", "1.0.0", "Wants", f"linux-arm64={duo}")
+            assert out.returncode == 0, out.stderr
+            data_ = (wants_dir / "1.0.0.olib").read_bytes()
+            record = dict(release, id="com.example.wants", release="1.0.0", license="MIT", source=None,
+                          dependencies={"assets": [], "packages": [{"id": package_id, "version": version}]},
+                          archive={"path": "1.0.0.olib", "sha256": hashlib.sha256(data_).hexdigest(), "size": len(data_)})
+            (wants_dir / "1.0.0.json").write_text(json.dumps(record))
+            return record
+
+        wants_with("com.example.absent", "1.0")
+        out = build(temp / "wants-absent")
+        check(out.returncode != 0 and "needs the package com.example.absent 1.0 or later, which this repository does not have" in out.stderr,
+              "a package dependency on a package not here is refused: " + out.stderr.strip())
+        wants_with("com.example.factory", "2.0")
+        out = build(temp / "wants-too-old")
+        check(out.returncode != 0 and "needs the package com.example.factory 2.0 or later, which this repository does not have" in out.stderr,
+              "and on a version later than any here: " + out.stderr.strip())
+        wants = wants_with("com.example.factory", "1.2")
+        out = build(temp / "wants-met")
+        check(out.returncode == 0, "a package dependency on a package here at that version or later builds: " + out.stderr.strip())
+        if out.returncode == 0:
+            wants_root = json.loads((temp / "wants-met" / "repository.json").read_text())
+            wants_index = json.loads(gzip.decompress((temp / "wants-met" / wants_root["index"]["path"]).read_bytes()))
+            listed = {p["id"]: p["versions"][0].get("requires", {}) for p in wants_index["packages"]}
+            check(listed["com.example.wants"] == {"packages": [{"id": "com.example.factory", "version": "1.2"}]}
+                  and listed["com.example.needy"] == {"packages": [{"id": "com.example.factory", "version": "1.2"}]},
+                  "the index lists them in requires.packages: " + json.dumps(listed))
+        (wants_dir / "1.0.0.json").write_text(json.dumps({k: v for k, v in wants.items() if k != "dependencies"}))
+        out = build(temp / "wants-unnamed")
+        check(out.returncode != 0 and "`dependencies` is not the archive's" in out.stderr, "a record not naming its archive's package dependencies is refused: " + out.stderr.strip())
+        (wants_dir / "1.0.0.json").write_text(json.dumps(dict(wants, dependencies={"assets": []})))
+        out = build(temp / "wants-assets-only")
+        check(out.returncode != 0 and "`dependencies` is not the archive's" in out.stderr, "nor one naming only its assets: " + out.stderr.strip())
+        shutil.rmtree(wants_dir)
+
+        # A file in the folder of a type a handler keeps (a sample, a waveform) is a piece of its own, however small.
+        spec = importlib.util.spec_from_file_location("build_index", BUILDER)
+        builder = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(builder)
+        held = temp / "samples.olib"
+        sample, small = "Samples/" + "a" * 64 + ".osp", "Assets/0123456789abcdef/small.wav"
+        with zipfile.ZipFile(held, "w") as z:
+            z.writestr("library.json", "{}")
+            z.writestr("Types/org.oscairn.sample-types/sample.json", json.dumps({"id": "org.oscairn.sample-types.sample", "folder": "Samples", "handler": "sample"}))
+            z.writestr(sample, b"x" * 4096)
+            z.writestr(small, b"y")
+        (temp / "cache-held").mkdir()
+        listed = {p["path"]: p["type"] for p in builder.pieces(held, {"plugins": [], "items": []}, temp / "cache-held")}
+        check(listed.get(sample) == "file" and listed.get("Assets") == "zip" and small not in listed,
+              "a sample in a handler's folder is a piece of its own at 4 KiB, a small file under Assets/ shares its folder's: " + str(listed))
+    finally:
+        shutil.rmtree(temp, ignore_errors=True)
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        sys.exit(__doc__)
+    sys.exit(main(Path(sys.argv[1]).resolve()))

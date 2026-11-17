@@ -242,6 +242,18 @@ def pieces(archive, manifest, cache):
     items = {i["path"] for i in manifest["items"]}
     groups = {}
     with zipfile.ZipFile(archive) as z:
+        # The folders of the types the archive declares that a handler keeps (samples, waveforms;
+        # RFC 0023): each file there is a piece of its own, whatever its size.
+        kept = set()
+        for info in z.infolist():
+            parts = info.filename.split("/")
+            if len(parts) == 3 and parts[0] == "Types" and parts[2].endswith(".json") and info.file_size <= 64 * 1024:
+                try:
+                    declared = json.loads(z.read(info))
+                except ValueError:
+                    continue
+                if isinstance(declared, dict) and declared.get("handler") and isinstance(declared.get("folder"), str):
+                    kept.add(declared["folder"])
         for info in z.infolist():
             if info.is_dir():
                 continue
@@ -253,7 +265,7 @@ def pieces(archive, manifest, cache):
                 key = ("zip", build, builds[build])
             elif "/".join(parts[:2]) in items:
                 key = ("zip", "/".join(parts[:2]), None)
-            elif parts[0] == "Assets" and info.file_size >= MIN_SAMPLE:
+            elif (parts[0] == "Assets" and info.file_size >= MIN_SAMPLE) or (len(parts) == 2 and parts[0] in kept):
                 key = ("file", name, None)
             else:
                 key = ("zip", parts[0], None)
@@ -366,22 +378,25 @@ def read_release(path, root, publishers, tool, cache, problems):
         problems.add(path, "`source` is not {\"url\", \"revision\"}")
     elif source != contents.get("source"):
         problems.add(path, f"`source` is not the archive's ({json.dumps(contents.get('source'))})")
-    # The asset libraries it needs, as the archive names them; each is checked against the repository in main().
+    # The asset libraries and the packages of any kind it needs, as the archive names them; each is
+    # checked against the repository in main().
     needs = contents.get("dependencies", {}).get("assets", [])
-    if r.get("dependencies", {"assets": []}) != {"assets": needs} and not (needs == [] and "dependencies" not in r):
-        problems.add(path, f"`dependencies` is not the archive's ({json.dumps({'assets': needs})})")
+    needs_packages = contents.get("dependencies", {}).get("packages", [])
+    named = {"assets": needs, **({"packages": needs_packages} if needs_packages else {})}
+    if r.get("dependencies", {"assets": []}) != named and not (needs == [] and needs_packages == [] and "dependencies" not in r):
+        problems.add(path, f"`dependencies` is not the archive's ({json.dumps(named)})")
     if len(problems) > before:
         return None
     r["name"] = contents["name"]
-    r["_kind"], r["_needs"], r["_archive"], r["_manifest"], r["_signer"] = contents["kind"], needs, archive, contents, signer
+    r["_kind"], r["_needs"], r["_needs_packages"], r["_archive"], r["_manifest"], r["_signer"] = contents["kind"], needs, needs_packages, archive, contents, signer
     return r, {
         "version": release,
         "channel": r.get("channel", "stable"),
         "manifest": manifest,
         "pieces": None,  # written in main() with the sizes below, once every release is checked
         "packageSignature": True,
-        # The packages it needs, as RFC 0031's index names them: for now the asset libraries its archive names.
-        "requires": {**r.get("requires", {}), **({"packages": needs} if needs else {})},
+        # The packages it needs, as RFC 0031's index names them: the asset libraries and packages its archive names.
+        "requires": {**r.get("requires", {}), **({"packages": needs + needs_packages} if needs or needs_packages else {})},
         "types": types,
         "platforms": {},
         "common": {"size": 0, "installed": 0},
@@ -603,6 +618,10 @@ def main():
                 have = [x for x, _ in packages.get(need.get("id"), []) if x["_kind"] == "asset" and x.get("yanked") is None]
                 if not any(version_key(x["release"]) >= version_key(need.get("version", "")) for x in have):
                     problems.add(f"packages/{pid}/{r['release']}.json", f"needs the asset library {need.get('id')} {need.get('version')} or later, which this repository does not have")
+            for need in r["_needs_packages"]:  # a package of any kind
+                have = [x for x, _ in packages.get(need.get("id"), []) if x.get("yanked") is None]
+                if not any(version_key(x["release"]) >= version_key(need.get("version", "")) for x in have):
+                    problems.add(f"packages/{pid}/{r['release']}.json", f"needs the package {need.get('id')} {need.get('version')} or later, which this repository does not have")
 
     revoked = read_revocations(root / "revoked.json", config, problems)
     if revoked is not None:

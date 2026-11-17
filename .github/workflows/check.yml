@@ -53,6 +53,9 @@ jobs:
           --repo . --previous .base
           --cache "$RUNNER_TEMP/cache" --out "$RUNNER_TEMP/site" --serial 0
 
+      - name: The index builder's test
+        run: python3 -I scripts/test_build_index.py "${{ steps.tools.outputs.path }}"
+
       - name: The release import's test
         # scripts/import-release.py end to end on a release it makes from the Arpeggiator's last
         # build, and its refusals; this pull request's own script, since it checks no submission.
