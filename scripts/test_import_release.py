@@ -628,6 +628,139 @@ def main(tool, plugin_check=None):
         _, result = verify()
         check(result.returncode == 1 and "needs the package org.oscairn.nothing 1.0.0 or later" in result.stderr, "the exception covers the init library only: another missing package is still refused: " + result.stderr)
         shutil.rmtree(packages / "packages" / init_id)
+
+        # A library-only release (kind library): type manifests and nothing else, no plugin and no build.
+        lib_id = "org.oscairn.test-types"
+        host = temp / "git" / "oscairn" / "oscairn"
+        host.mkdir(parents=True)
+        for command in (["init", "-q"], ["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "--allow-empty", "-m", "release"],
+                        *(["-c", "user.name=t", "-c", "user.email=t@example.com", "tag", "-a", "-m", t, t] for t in (f"{lib_id}-v1.0.0", f"{lib_id}-v1.0.1"))):
+            assert run("git", "-C", host, *command).returncode == 0
+        host_revision = run("git", "-C", host, "rev-parse", "HEAD").stdout.strip()
+        tree = temp / "lib-tree" / "Types" / lib_id
+        tree.mkdir(parents=True)
+        (tree / "sample.json").write_text('{"format": "oscairn.type", "version": 1, "id": "org.oscairn.test-types.sample", "name": "Sample", "plural": "Samples", "recognize": {"extensions": [".osp"]}, "storage": "content", "folder": "Samples", "identity": "content", "handler": "sample", "fields": []}')
+        (tree / "waveform.json").write_text('{"format": "oscairn.type", "version": 1, "id": "org.oscairn.test-types.waveform", "name": "Waveform", "plural": "Waveforms", "recognize": {"extensions": [".owf"]}, "storage": "content", "folder": "Waveforms", "identity": "content", "handler": "waveform", "fields": []}')
+        (temp / "MIT.txt").write_text("MIT License\n\nPermission is hereby granted.\n")
+        lib_source = {"url": "https://github.com/oscairn/oscairn", "revision": host_revision}
+
+        def library_release(version="1.0.0", change=lambda m: None, license_text=None, extra_file=None):
+            made = temp / f"lib-release-{next(cases)}"
+            license_file = temp / "MIT.txt"
+            if license_text is not None:
+                license_file = temp / "lib-license" / "MIT.txt"
+                license_file.parent.mkdir(exist_ok=True)
+                license_file.write_text(license_text)
+            if extra_file:
+                (temp / "lib-tree" / extra_file[0]).parent.mkdir(parents=True, exist_ok=True)
+                (temp / "lib-tree" / extra_file[0]).write_text(extra_file[1])
+            made_run = run(sys.executable, "-I", HERE / "make-library-release.py", "--tree", temp / "lib-tree", "--id", lib_id, "--version", version,
+                           "--name", "Sample types", "--summary", "The sample and waveform item types, for samplers and sample content", "--license", "MIT",
+                           "--license-file", license_file, "--source-url", lib_source["url"], "--tag", f"{lib_id}-v{version}", "--revision", host_revision,
+                           "--tag-name", "types", "--out", made)
+            if extra_file:
+                (temp / "lib-tree" / extra_file[0]).unlink()
+            assert made_run.returncode == 0 or extra_file, made_run.stderr
+            if made_run.returncode != 0:
+                return made_run
+            manifest = json.loads((made / "oscairn-release.json").read_bytes())
+            change(manifest)
+            (made / "oscairn-release.json").write_text(json.dumps(manifest))
+            for f in served.iterdir():
+                f.unlink()
+            for f in made.iterdir():
+                shutil.copy(f, served)
+            return made_run
+
+        def library_verify(*extra, where=None):
+            candidate = temp / f"candidate-{next(cases)}"
+            result = run(sys.executable, "-I", SCRIPT, "verify", "--from", base, "--git-base", temp / "git", "--out", candidate, "--packages", where or packages, *extra)
+            return candidate, result
+
+        library_release()
+        candidate, result = library_verify()
+        check(result.returncode == 1 and f"no release of {lib_id} here yet" in result.stderr and "--first-release" in result.stderr and not (candidate / "plan.json").exists(),
+              "a library of a new id without the flag is refused, naming it: " + result.stderr.strip()[-300:])
+        candidate, result = library_verify("--first-release")
+        shown = (candidate / "first-release.txt").read_text() if (candidate / "first-release.txt").exists() else ""
+        check(result.returncode == 0 and json.loads((candidate / "matrix.json").read_bytes()) == [] and "license: MIT" in shown
+              and f"source: https://github.com/oscairn/oscairn {lib_id}-v1.0.0 ({host_revision})" in shown, "with the flag a library verifies, with nothing to play, its license and source shown: " + result.stdout + result.stderr)
+        by_hand_lib = temp / "by-hand-library"
+        shutil.copytree(candidate, by_hand_lib)
+        result = run(sys.executable, "-I", SCRIPT, "sign", "--candidate", candidate, "--key", temp / "keys" / "test.key", "--oscairn-sign", tool)
+        check(result.returncode == 0, "and signs, with oscairn-sign library-package: " + result.stdout + result.stderr)
+        lib_packages = temp / "packages-library"
+        shutil.copytree(packages, lib_packages)
+        result = run(sys.executable, "-I", SCRIPT, "record", "--candidate", candidate, "--oscairn-sign", tool, "--packages", lib_packages)
+        made = lib_packages / "packages" / lib_id
+        archive = made / "1.0.0.olib"
+        want = {"format": "oscairn.repository-release", "version": 1, "id": lib_id, "release": "1.0.0", "publisher": "org.oscairn",
+                "summary": "The sample and waveform item types, for samplers and sample content", "license": "MIT", "tags": ["types"], "channel": "stable",
+                "platforms": [], "source": lib_source}
+        got = json.loads((made / "1.0.0.json").read_bytes()) if result.returncode == 0 else {}
+        archive_part = got.pop("archive", None)
+        yanked = got.pop("yanked", 0)
+        check(result.returncode == 0 and got == want and yanked is None and archive_part == {"path": "1.0.0.olib", "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(), "size": archive.stat().st_size},
+              "and records what the by-hand recipe gives (kind library, tags types, platforms [], no items or code), with the source added: " + result.stdout + result.stderr + json.dumps(got))
+        result = run(tool, "verify", archive)
+        check(result.returncode == 0 and f"archive {lib_id} {test_id}" in result.stdout and "build " not in result.stdout, "the .olib verifies, signed by the test key, with no build: " + result.stdout + result.stderr)
+        with zipfile.ZipFile(archive) as z:
+            names = sorted(n for n in z.namelist() if not n.endswith("/"))
+        check(names == ["Licenses/MIT.txt", f"Types/{lib_id}/sample.json", f"Types/{lib_id}/waveform.json", "library.json", "library.sig"] or
+              sorted(set(names) - {"library.sig"}) == ["Licenses/MIT.txt", f"Types/{lib_id}/sample.json", f"Types/{lib_id}/waveform.json", "library.json"], "the archive holds the two types, the license and library.json only: " + str(names))
+        checked = temp / "checked-library"
+        (checked / "packages" / lib_id).mkdir(parents=True)
+        shutil.copytree(packages / "publishers", checked / "publishers")
+        shutil.copy(REPO / "repository-config.json", checked)
+        shutil.copy(REPO / "revoked.json", checked)
+        for f in ("1.0.0.json", "1.0.0.olib"):
+            shutil.copy(made / f, checked / "packages" / lib_id)
+        result = run(sys.executable, "-I", HERE / "build-index.py", "--check", "--oscairn-sign", tool, "--repo", checked,
+                     "--cache", temp / "cache-library", "--out", temp / "site-library", "--serial", "0")
+        check(result.returncode == 0, "build-index.py --check passes it: " + result.stdout + result.stderr)
+        result = run("sh", by_hand_lib / "sign.sh", Path("keys") / "test.key", Path(tool).resolve(), cwd=temp)
+        check(result.returncode == 0 and (by_hand_lib / "out" / f"{lib_id}-1.0.0.olib").is_file(), "sign.sh signs it too: " + result.stdout + result.stderr)
+
+        def lib_refused(case, wanted, *extra, where=None, **options):
+            made_run = library_release(**options)
+            if made_run.returncode != 0:  # the maker itself refuses (an unknown file in the tree)
+                check(wanted in made_run.stderr, f"{case} is refused by the maker: " + made_run.stderr.strip()[-200:])
+                return
+            candidate, result = library_verify(*extra, where=where)
+            check(result.returncode == 1 and wanted in result.stderr and not (candidate / "plan.json").exists(), f"{case} is refused: " + result.stderr.strip()[-300:])
+
+        lib_refused("a wrong digest", "is not the size and SHA-256 the manifest gives", "--first-release", change=lambda m: m["files"][0].update(sha256="0" * 64))
+        lib_refused("a missing license", "has no `license`", "--first-release", change=lambda m: m.pop("license"))
+        lib_refused("a missing license file list", "has no `licenseFiles`", "--first-release", change=lambda m: m.pop("licenseFiles"))
+        lib_refused("builds present", "has `builds`, which the schema does not allow", "--first-release", change=lambda m: m.update(builds=[]))
+        lib_refused("a plugin present", "has `plugins`, which the schema does not allow", "--first-release", change=lambda m: m.update(plugins=[]))
+        lib_refused("a file outside Types/<id>/", f"is not under Types/{lib_id}/", "--first-release",
+                    change=lambda m: m["files"][0].update(path="Types/org.other.types/sample.json"))
+        lib_refused("a file that is not under Types/", "does not match", "--first-release", change=lambda m: m["files"][0].update(path="Samples/x.json"))
+        lib_refused("an unknown file in the tree", "is not a type manifest under Types/", "--first-release", extra_file=("Samples/x.osp", "x"))
+        lib_refused("a source that is not a library repository", "is not one of Oscairn's library repositories", "--first-release",
+                    change=lambda m: m["source"].update(url="https://github.com/oscairn/dexed"))
+        lib_refused("a tag that is not the revision", "not source.revision", "--first-release", change=lambda m: m["source"].update(revision="1" * 40))
+        lib_refused("the flag on an id that has a release", f"{lib_id} has a release here already", "--first-release", where=lib_packages)
+        # A plugin release still may not come from the host repository.
+        release(change=lambda m: m["source"].update(url="https://github.com/oscairn/oscairn"))
+        _, result = verify()
+        check(result.returncode == 1 and "is not one of Oscairn's plugin repositories" in result.stderr, "a plugin release from the host repository is still refused: " + result.stderr.strip()[-200:])
+        # The next version: no flag, the license against the last release's.
+        library_release("1.0.1")
+        candidate, result = library_verify(where=lib_packages)
+        check(result.returncode == 0 and not (candidate / "first-release.txt").exists(), "a later version needs no flag, and shows no first-release text: " + result.stderr)
+        library_release("1.0.1", license_text="MIT License\n\nAnd one more condition.\n")
+        _, result = library_verify(where=lib_packages)
+        check(result.returncode == 1 and "license file MIT.txt changed" in result.stderr, "a changed license file is refused against the last release: " + result.stderr.strip()[-200:])
+        # removed.json: a removed id is refused with and without the flag.
+        library_release()
+        (packages / "removed.json").write_text(json.dumps({"format": "oscairn.repository-removals", "version": 1, "versions": [
+            {"id": lib_id, "version": "0.9.0", "reason": "test", "date": "2026-11-17"}]}))
+        for extra in ((), ("--first-release",)):
+            _, result = library_verify(*extra)
+            check(result.returncode == 1 and "removed.json lists it" in result.stderr, f"a removed library id is refused {'with' if extra else 'without'} the flag: " + result.stderr.strip()[-200:])
+        (packages / "removed.json").unlink()
         server.shutdown()
     finally:
         shutil.rmtree(temp, ignore_errors=True)

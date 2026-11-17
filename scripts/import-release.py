@@ -58,6 +58,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 SCHEMA = HERE.parent / "schemas" / "plugin-release.schema.json"
+LIBRARY_SCHEMA = HERE.parent / "schemas" / "library-release.schema.json"
 MANIFEST = "oscairn-release.json"
 LICENSES = "licenses.tar.gz"
 FORKS = {f"https://github.com/oscairn/{name}" for name in ("dexed", "surge", "sfizz", "sst-effects", "setBfree", "arpeggiator")}
@@ -89,6 +90,10 @@ INIT_FOLDERS = ("Sounds", "Samples", "Waveforms", "Types", "Licenses")  # no Plu
 MAX_SOUND = 4 << 20
 MAX_BESIDE = 95 * 2**20  # an archive beside its record: GitHub refuses files over 100 MiB
 PLUGIN_CHECK_SECONDS = 600
+# A library-only release (README.md, "A library release") may come from a first-party repository or
+# the host repository, where the item types' source of truth is; a plugin release may not come from the latter.
+LIBRARY_SOURCES = FIRST_PARTY | {"https://github.com/oscairn/oscairn"}
+MAX_TYPE_FILE = 64 << 10  # a type manifest, as the archive reader's
 OWN_PUBLISHER = "org.oscairn"  # the only publisher a first release may be for
 
 
@@ -590,15 +595,18 @@ def derived_problems(original, signed):
 
 # verify --------------------------------------------------------------------------------------
 
+TAG = r"(?:oscairn-|[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+-)?v[0-9]+\.[0-9]+\.[0-9]+"  # vX.Y.Z or oscairn-vX.Y.Z; a library release's <id>-vX.Y.Z too (verify checks which)
+
+
 def where_from(args):
     """The release's download address, and the fork it is on (None for --from)."""
     if args.release:
-        m = re.fullmatch(r"https://github\.com/(oscairn/[A-Za-z0-9._-]+)/releases/tag/((?:oscairn-)?v[0-9]+\.[0-9]+\.[0-9]+)", args.release)
+        m = re.fullmatch(r"https://github\.com/(oscairn/[A-Za-z0-9._-]+)/releases/tag/(" + TAG + ")", args.release)
         if not m:
             raise Refused(f"{args.release} is not https://github.com/oscairn/<fork>/releases/tag/[oscairn-]vX.Y.Z")
         args.repo, args.tag = m.groups()
     if args.repo:
-        if not re.fullmatch(r"oscairn/[A-Za-z0-9._-]+", args.repo) or not re.fullmatch(r"(?:oscairn-)?v[0-9]+\.[0-9]+\.[0-9]+", args.tag or ""):
+        if not re.fullmatch(r"oscairn/[A-Za-z0-9._-]+", args.repo) or not re.fullmatch(TAG, args.tag or ""):
             raise Refused("--repo is oscairn/<fork> and --tag vX.Y.Z or oscairn-vX.Y.Z")
         return f"https://github.com/{args.repo}/releases/download/{args.tag}/", f"https://github.com/{args.repo}"
     if not args.from_:
@@ -620,6 +628,14 @@ def resolve_tag(url, tag, git_base):
 def commands(plan, key, tool):
     """The oscairn-sign commands that sign the candidate, run in it: each build, then the archive."""
     out = []
+    if plan.get("kind") == "library":
+        package = [tool, "library-package", "--key", key, "--license", plan["license"]]
+        for f in plan["licenseFiles"]:
+            package += ["--license-file", f]
+        package += ["--source", plan["source"]["url"], plan["source"]["revision"]]
+        for d in plan["packageDependencies"]:
+            package += ["--package-dependency", d["id"], d["version"]]
+        return [package + [plan["archive"], plan["id"], plan["name"], "tree"]]
     plugins = ",".join(f"{p['id']}@{p['version']}" for p in plan["plugins"])
     for b in plan["builds"]:
         out.append([tool, "build", key, "clap", plugins, plan["version"], b["platform"], b["path"]])
@@ -643,6 +659,157 @@ def commands(plan, key, tool):
     return out
 
 
+def fetch_licenses(base, out, manifest, problems):
+    """licenses.tar.gz, and each license file the manifest lists out of it, checked against its SHA-256."""
+    download(base + LICENSES, out / LICENSES, 64 << 20)
+    with tarfile.open(out / LICENSES, "r:gz") as tar:
+        names = {m.name.removeprefix("./"): m for m in tar.getmembers()}
+        (out / "licenses").mkdir()
+        for f in manifest["licenseFiles"]:
+            member = names.get(f["file"])
+            if member is None or not member.isfile() or member.size > MAX_LICENSE:
+                problems.append(f"{LICENSES} has no file {f['file']}")
+                continue
+            data = tar.extractfile(member).read()
+            if hashlib.sha256(data).hexdigest() != f["sha256"]:
+                problems.append(f"{f['file']} is not the SHA-256 the manifest gives")
+            (out / f["file"]).write_bytes(data)
+
+
+def license_gate(args, first, path, previous, manifest, package, source, problems):
+    """The license and license files against the package's last release (a difference is a problem
+    unless the run accepts it); for a first release, nothing to compare with, and the text that shows
+    its license and source. Returns that text, or None."""
+    shown = None
+    now = {Path(f["file"]).name: f["sha256"] for f in manifest["licenseFiles"]}
+    if first:
+        # Nothing to compare with: whoever approves the signing accepts this license and source for the first time.
+        before, changes = now, []
+        shown = (f"first release of a new package id: {package['id']} {package['version']} ({package['name']})\n"
+                 f"publisher: {OWN_PUBLISHER}\nlicense: {manifest['license']}\n"
+                 f"license files: {', '.join(sorted(now)) or 'none'}\n"
+                 f"source: {source['url']} {source['tag']} ({source['revision']})\n")
+    else:
+        with tempfile.TemporaryDirectory() as temp:
+            before = previous_license_files(path, previous, Path(temp))
+        changes = [f"license {previous.get('license')} becomes {manifest['license']}"] if manifest["license"] != previous.get("license") else []
+    changes += [f"license file {n} is new" for n in sorted(set(now) - set(before))]
+    changes += [f"license file {n} is gone" for n in sorted(set(before) - set(now))]
+    changes += [f"license file {n} changed" for n in sorted(set(now) & set(before)) if now[n] != before[n]]
+    if changes and args.accept_license_change:
+        print(f"accepted, against {path}:\n  " + "\n  ".join(changes))
+    elif changes:
+        problems.append(f"the license is not {path}'s (if that is meant, run again accepting a license change):\n  " + "\n  ".join(changes))
+    if problems:
+        raise Refused("\n".join(problems))
+    return shown
+
+
+def new_id_problems(args, packages, package, problems):
+    """Whether the id has a release here, with the first-release rules (README.md, "A first release")
+    added to problems: the flag only for an id with none, and an id removed.json lists never."""
+    has_records = any((packages / "packages" / package["id"]).glob("*.json"))
+    if args.first_release and has_records:
+        problems.append(f"--first-release: {package['id']} has a release here already, so this is not its first; run again without it")
+    if not has_records and any(e.get("id") == package["id"] for e in removed_versions(packages)):
+        problems.append(f"{package['id']} has no release here, and removed.json lists it: a removed package id is not imported again as a new one")
+    elif not has_records and not args.first_release:
+        problems.append(f"no release of {package['id']} here yet: a first release of a new package id is imported only when asked for"
+                        " (--first-release; the workflow's first-release input), or is submitted by hand (README.md)")
+    if args.first_release and not has_records and not (packages / "publishers" / f"{OWN_PUBLISHER}.json").exists():
+        problems.append(f"publishers/{OWN_PUBLISHER}.json is not here: a first release is {OWN_PUBLISHER}'s")
+    return has_records
+
+
+def write_sign_sh(out, plan):
+    """sign.sh: the commands that sign the candidate, for signing by hand."""
+    quoted = lambda argv: " ".join(a if a in ('"$key"', '"$sign"') else shlex.quote(a) for a in argv)
+    (out / "sign.sh").write_text(
+        "#!/bin/sh\n"
+        f"# Signs {plan['id']} {plan['version']}, checked by import-release.py verify, with the publisher's key.\n"
+        "#   sh sign.sh <publisher key file> <oscairn-sign>\n"
+        "# then, in a checkout of oscairn/packages:\n"
+        "#   python3 scripts/import-release.py record --candidate <this folder> --oscairn-sign <oscairn-sign>\n"
+        "set -eu\nkey=$(realpath \"$1\")\ncase $2 in */*) sign=$(realpath \"$2\") ;; *) sign=$(command -v \"$2\") ;; esac\n"
+        "cd \"$(dirname \"$0\")\"\nmkdir -p out\n"
+        + "".join(quoted(c) + "\n" for c in commands(plan, '"$key"', '"$sign"')))
+
+
+def verify_library(args, base, fork, out, manifest):
+    """verify for a library-only release (manifest kind "library", schemas/library-release.schema.json):
+    a tree of type manifests, no builds and no plugin, so nothing to play: matrix.json is empty."""
+    problems = validate(manifest, json.loads(LIBRARY_SCHEMA.read_bytes()))
+    if problems:
+        raise Refused("the manifest is not valid:\n  " + "\n  ".join(problems))
+    package, source, files = manifest["package"], manifest["source"], manifest["files"]
+    for field, values in (("files' paths", [f["path"] for f in files]), ("files' names", [f["file"] for f in files]),
+                          ("license files' names", [f["file"] for f in manifest["licenseFiles"]])):
+        if len(set(values)) != len(values):
+            problems.append(f"the {field} are not each different")
+    for f in files:
+        if not f["path"].startswith(f"Types/{package['id']}/"):
+            problems.append(f"{f['path']} is not under Types/{package['id']}/: a library release holds the item types its package declares and nothing else")
+    if source["url"] not in LIBRARY_SOURCES:
+        problems.append(f"source.url {source['url']} is not one of Oscairn's library repositories: {sorted(LIBRARY_SOURCES)}")
+    if fork and source["url"] != fork:
+        problems.append(f"source.url {source['url']} is not {fork}, which holds the release")
+    tags = ("v" + package["version"], "oscairn-v" + package["version"], f"{package['id']}-v{package['version']}")
+    if source["tag"] not in tags or (args.tag and source["tag"] != args.tag):
+        problems.append(f"source.tag {source['tag']} is not one of {', '.join(tags)}" + (f" and {args.tag}" if args.tag else ""))
+    packages = Path(args.packages)
+    if any(e.get("id") == package["id"] and e.get("version") == package["version"] for e in removed_versions(packages)):
+        problems.append(f"{package['id']} {package['version']} was removed (removed.json): a removed version is never published again; publish a new version")
+    if (packages / "packages" / package["id"] / f"{package['version']}.json").exists():
+        problems.append(f"{package['id']} {package['version']} is here already: a version never changes once merged")
+    has_records = new_id_problems(args, packages, package, problems)
+    needs = manifest.get("dependencies", {}).get("packages", [])
+    problems += package_dependency_problems(packages, package["id"], needs)
+    if problems:
+        raise Refused("\n".join(problems))
+    commit = resolve_tag(source["url"], source["tag"], args.git_base)
+    if commit != source["revision"]:
+        problems.append(f"the tag {source['tag']} in {source['url']} is {commit or 'not there'}, not source.revision {source['revision']}")
+    for f in files:
+        path = out / "tree" / f["path"]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        download(base + f["file"], path, f["size"])
+        data = path.read_bytes()
+        if len(data) != f["size"] or hashlib.sha256(data).hexdigest() != f["sha256"]:
+            problems.append(f"{f['file']} is not the size and SHA-256 the manifest gives")
+            continue
+        try:
+            item = json.loads(data) if len(data) <= MAX_TYPE_FILE else None
+        except ValueError:
+            item = None
+        if not isinstance(item, dict) or item.get("format") != "oscairn.type":
+            problems.append(f"{f['file']} is not an item type manifest (a JSON object of at most {MAX_TYPE_FILE} bytes whose format is oscairn.type)")
+    fetch_licenses(base, out, manifest, problems)
+    first = args.first_release
+    if first:
+        path, previous = None, {"publisher": OWN_PUBLISHER}
+    else:
+        path, previous = previous_release(packages, package["id"])
+    shown = license_gate(args, first, path, previous, manifest, package, source, problems)
+    if first:
+        (out / "first-release.txt").write_text(shown)
+        print(shown, end="")
+    plan = {
+        "kind": "library", "id": package["id"], "version": package["version"], "name": package["name"], "summary": package["summary"],
+        "publisher": previous["publisher"], "tags": manifest["tags"], "channel": previous.get("channel", "stable"),
+        "license": manifest["license"], "licenseFiles": [f["file"] for f in manifest["licenseFiles"]],
+        "source": {"url": source["url"], "revision": source["revision"]}, "tag": source["tag"],
+        "dependencies": [], "packageDependencies": needs,
+        "files": [f["path"] for f in files], "builds": [], "notImported": [],
+        **({"firstRelease": True} if first else {}),
+        "archive": f"out/{package['id']}-{package['version']}.olib",
+    }
+    (out / "plan.json").write_text(json.dumps(plan, indent=2) + "\n")
+    (out / "matrix.json").write_text("[]")
+    (out / "notice.txt").write_text("")
+    write_sign_sh(out, plan)
+    print(f"verified library {package['id']} {package['version']} from {source['url']} {source['tag']} ({source['revision']}): {len(files)} files, nothing to play")
+
+
 def verify(args):
     base, fork = where_from(args)
     out = Path(args.out)
@@ -652,6 +819,8 @@ def verify(args):
     problems = []
     download(base + MANIFEST, out / MANIFEST, MAX_MANIFEST)
     manifest = json.loads((out / MANIFEST).read_bytes())
+    if manifest.get("kind") == "library":
+        return verify_library(args, base, fork, out, manifest)
     problems += validate(manifest, json.loads(SCHEMA.read_bytes()))
     if problems:
         raise Refused("the manifest is not valid:\n  " + "\n  ".join(problems))
@@ -679,16 +848,7 @@ def verify(args):
         problems.append(f"{package['id']} {package['version']} was removed (removed.json): a removed version is never published again; publish a new version")
     if (packages / "packages" / package["id"] / f"{package['version']}.json").exists():
         problems.append(f"{package['id']} {package['version']} is here already: a version never changes once merged")
-    has_records = any((packages / "packages" / package["id"]).glob("*.json"))
-    if args.first_release and has_records:
-        problems.append(f"--first-release: {package['id']} has a release here already, so this is not its first; run again without it")
-    if not has_records and any(e.get("id") == package["id"] for e in removed_versions(packages)):
-        problems.append(f"{package['id']} has no release here, and removed.json lists it: a removed package id is not imported again as a new one")
-    elif not has_records and not args.first_release:
-        problems.append(f"no release of {package['id']} here yet: a first release of a new package id is imported only when asked for"
-                        " (--first-release; the workflow's first-release input), or is submitted by hand (README.md)")
-    if args.first_release and not has_records and not (packages / "publishers" / f"{OWN_PUBLISHER}.json").exists():
-        problems.append(f"publishers/{OWN_PUBLISHER}.json is not here: a first release is {OWN_PUBLISHER}'s")
+    has_records = new_id_problems(args, packages, package, problems)
     package_needs = manifest.get("dependencies", {}).get("packages", [])
     init = manifest.get("init")
     arriving = {f"{package['id']}.init"} if init else set()  # the init library arrives in this run, so it need not be here yet
@@ -735,19 +895,7 @@ def verify(args):
             else:
                 if held not in [n["id"] for n in package_needs]:
                     problems.append(f"the init library is {held}, which the manifest's dependencies.packages does not name: the package must need its init library")
-    download(base + LICENSES, out / LICENSES, 64 << 20)
-    with tarfile.open(out / LICENSES, "r:gz") as tar:
-        names = {m.name.removeprefix("./"): m for m in tar.getmembers()}
-        (out / "licenses").mkdir()
-        for f in manifest["licenseFiles"]:
-            member = names.get(f["file"])
-            if member is None or not member.isfile() or member.size > MAX_LICENSE:
-                problems.append(f"{LICENSES} has no file {f['file']}")
-                continue
-            data = tar.extractfile(member).read()
-            if hashlib.sha256(data).hexdigest() != f["sha256"]:
-                problems.append(f"{f['file']} is not the SHA-256 the manifest gives")
-            (out / f["file"]).write_bytes(data)
+    fetch_licenses(base, out, manifest, problems)
 
     # The license, against the package's last release.
     first = args.first_release
@@ -761,27 +909,7 @@ def verify(args):
         init_plan = init_exception(packages, package, manifest, init_path, held, previous["publisher"], args.accept_license_change, problems)
         if init_plan:
             init_plan["channel"] = previous.get("channel", "stable")
-    now = {Path(f["file"]).name: f["sha256"] for f in manifest["licenseFiles"]}
-    if first:
-        # Nothing to compare with: whoever approves the signing accepts this license and source for the first time.
-        before, changes = now, []
-        shown = (f"first release of a new package id: {package['id']} {package['version']} ({package['name']})\n"
-                 f"publisher: {OWN_PUBLISHER}\nlicense: {manifest['license']}\n"
-                 f"license files: {', '.join(sorted(now)) or 'none'}\n"
-                 f"source: {source['url']} {source['tag']} ({source['revision']})\n")
-    else:
-        with tempfile.TemporaryDirectory() as temp:
-            before = previous_license_files(path, previous, Path(temp))
-        changes = [f"license {previous.get('license')} becomes {manifest['license']}"] if manifest["license"] != previous.get("license") else []
-    changes += [f"license file {n} is new" for n in sorted(set(now) - set(before))]
-    changes += [f"license file {n} is gone" for n in sorted(set(before) - set(now))]
-    changes += [f"license file {n} changed" for n in sorted(set(now) & set(before)) if now[n] != before[n]]
-    if changes and args.accept_license_change:
-        print(f"accepted, against {path}:\n  " + "\n  ".join(changes))
-    elif changes:
-        problems.append(f"the license is not {path}'s (if that is meant, run again accepting a license change):\n  " + "\n  ".join(changes))
-    if problems:
-        raise Refused("\n".join(problems))
+    shown = license_gate(args, first, path, previous, manifest, package, source, problems)
     if first:
         (out / "first-release.txt").write_text(shown)
         print(shown, end="")
@@ -806,16 +934,7 @@ def verify(args):
     (out / "matrix.json").write_text(json.dumps([{"platform": b["platform"], "runner": PLATFORMS[b["platform"]]["runner"]} for b in builds]))
     notice = "".join(f"{platform} build not imported: no Oscairn host for that platform yet\n" for platform in left_out)
     (out / "notice.txt").write_text(notice)
-    quoted = lambda argv: " ".join(a if a in ('"$key"', '"$sign"') else shlex.quote(a) for a in argv)
-    (out / "sign.sh").write_text(
-        "#!/bin/sh\n"
-        f"# Signs {package['id']} {package['version']}, checked by import-release.py verify, with the publisher's key.\n"
-        "#   sh sign.sh <publisher key file> <oscairn-sign>\n"
-        "# then, in a checkout of oscairn/packages:\n"
-        "#   python3 scripts/import-release.py record --candidate <this folder> --oscairn-sign <oscairn-sign>\n"
-        "set -eu\nkey=$(realpath \"$1\")\ncase $2 in */*) sign=$(realpath \"$2\") ;; *) sign=$(command -v \"$2\") ;; esac\n"
-        "cd \"$(dirname \"$0\")\"\nmkdir -p out\n"
-        + "".join(quoted(c) + "\n" for c in commands(plan, '"$key"', '"$sign"')))
+    write_sign_sh(out, plan)
     print(f"verified {package['id']} {package['version']} from {source['url']} {source['tag']} ({source['revision']}): "
           + ", ".join(b["platform"] for b in builds))
     print(notice, end="")
@@ -923,11 +1042,52 @@ def write_init_record(packages, init, olib):
     print(f"recorded packages/{init['id']}/{init['version']}.json (the init library, published under the init exception)")
 
 
+def record_library(candidate, packages, plan, olib, key, tool):
+    """record for a library-only release: the archive signed by the publisher's key, with no build, holding
+    exactly the files verify checked (and the license files), and the record README.md's by-hand recipe gives."""
+    run = subprocess.run([tool, "verify", str(olib)], capture_output=True, text=True, timeout=900)
+    if run.returncode != 0:
+        raise Refused(f"the archive is refused: {run.stderr.strip()}")
+    lines = [line.split() for line in run.stdout.splitlines()]
+    problems = [" ".join(w) for w in lines if w[:1] in (["outside"], ["build"])]
+    if ["archive", plan["id"], key_id(key)] not in lines:
+        problems.append(f"the archive is not {plan['id']} signed by {plan['publisher']}'s key {key_id(key)}")
+    with zipfile.ZipFile(olib) as z:
+        names = z.namelist()
+        for path in plan["files"]:
+            if path not in names or hashlib.sha256((candidate / "tree" / path).read_bytes()).hexdigest() != hashlib.sha256(z.read(path)).hexdigest():
+                problems.append(f"the archive's {path} is not the file verify checked")
+        for name in names:
+            if not name.endswith("/") and name not in plan["files"] and not name.startswith("Licenses/") and name not in ("library.json", "library.sig"):
+                problems.append(f"the archive holds {name}, which the release does not list")
+        contents = json.loads(z.read("library.json"))
+    if contents.get("id") != plan["id"] or contents.get("license") != plan["license"] or contents.get("source") != plan["source"]:
+        problems.append("the archive's id, license or source is not the plan's")
+    size = olib.stat().st_size
+    if size > MAX_BESIDE:
+        problems.append(f"the archive is {size} bytes, too large to go beside its record: give it an https:// `url` by hand")
+    if problems:
+        raise Refused("\n".join(problems))
+    folder = packages / "packages" / plan["id"]
+    folder.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(olib, folder / f"{plan['version']}.olib")
+    r = {"format": "oscairn.repository-release", "version": 1, "id": plan["id"], "release": plan["version"], "publisher": plan["publisher"],
+         "summary": plan["summary"], "license": plan["license"], "tags": plan["tags"], "channel": plan["channel"], "platforms": [], "source": plan["source"]}
+    if plan["packageDependencies"]:
+        r["dependencies"] = {"assets": [], "packages": plan["packageDependencies"]}
+    r["archive"] = {"path": f"{plan['version']}.olib", "sha256": sha256_file(olib), "size": size}
+    r["yanked"] = None
+    (folder / f"{plan['version']}.json").write_text(json.dumps(r, indent=2, ensure_ascii=False) + "\n")
+    print(f"recorded packages/{plan['id']}/{plan['version']}.json")
+
+
 def record(args):
     candidate, packages = Path(args.candidate).resolve(), Path(args.packages)
     plan = json.loads((candidate / "plan.json").read_bytes())
     olib = candidate / plan["archive"]
     key = json.loads((packages / "publishers" / f"{plan['publisher']}.json").read_bytes())["key"]
+    if plan.get("kind") == "library":
+        return record_library(candidate, packages, plan, olib, key, args.oscairn_sign)
     run = subprocess.run([args.oscairn_sign, "verify", str(olib)], capture_output=True, text=True, timeout=900)
     if run.returncode != 0:
         raise Refused(f"the archive is refused: {run.stderr.strip()}")

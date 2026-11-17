@@ -85,7 +85,9 @@ jobs:
     # Each build played on its own platform (import-release.py's PLATFORMS: macos-15 for
     # macos-arm64, ubuntu-24.04-arm for linux-arm64, ubuntu-24.04 for linux-x86_64). Plugin code
     # runs here, so this job has no key and only a read token, and the tools are cached before it runs.
+    # A library-only release (manifest kind library) has no build: its matrix is empty and this job is skipped.
     needs: verify
+    if: needs.verify.outputs.matrix != '[]'
     name: plugin-check ${{ matrix.platform }}
     strategy:
       fail-fast: false
@@ -121,7 +123,9 @@ jobs:
   candidate:
     # The checked, unsigned candidate, for signing by hand: the builds, the license files, plan.json
     # and sign.sh.
-    needs: plugin-check
+    needs: [verify, plugin-check]
+    # plugin-check is skipped only for a library-only release; a plugin release's must have succeeded.
+    if: ${{ !cancelled() && needs.verify.result == 'success' && (needs.plugin-check.result == 'success' || needs.plugin-check.result == 'skipped') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions: {}
@@ -232,7 +236,7 @@ jobs:
         run: |
           notice=$(cat "$RUNNER_TEMP/candidate/notice.txt")
           first=$(cat "$RUNNER_TEMP/candidate/first-release.txt" 2>/dev/null || true)
-          read -r id version fork tag revision init < <(python3 -I -c 'import json, sys; p = json.load(open(sys.argv[1])); print(p["id"], p["version"], p["source"]["url"].rsplit("/", 1)[1], p["tag"], p["source"]["revision"], p.get("initPackage", {}).get("id", "-"))' "$RUNNER_TEMP/candidate/plan.json")
+          read -r id version fork tag revision init kind < <(python3 -I -c 'import json, sys; p = json.load(open(sys.argv[1])); print(p["id"], p["version"], p["source"]["url"].rsplit("/", 1)[1], p["tag"], p["source"]["revision"], p.get("initPackage", {}).get("id", "-"), p.get("kind", "plugin"))' "$RUNNER_TEMP/candidate/plan.json")
           branch="import/$id-$version"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -252,9 +256,14 @@ jobs:
             title="$title (first release of a new package id)"
             body_first=$(printf 'First release of a new package id, imported because the dispatcher asked for it (first-release). Nothing earlier to compare with, so the license and source are shown here:\n\n%s' "$first")$'\n\n'
           fi
+          what="its manifest, hashes, source tag, libraries and license checked, each build played by oscairn-plugin-check on its platform"
+          if [ "$kind" = library ]; then
+            title="$title (library release)"
+            what="its manifest, each file's hash, source tag and license checked; a library has no code, so nothing was played"
+          fi
           git commit -q -m "$title: oscairn/$fork $tag"
           git push "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git" "HEAD:refs/heads/$branch"
-          gh pr create --base main --head "$branch" --title "$title" --body "${body_first}${extra}Imported from https://github.com/oscairn/$fork/releases/tag/$tag (\`$revision\`) by $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID: its manifest, hashes, source tag, libraries and license checked, each build played by oscairn-plugin-check on its platform, signed with the publisher key. ${notice:+Not imported: $notice. }Merge once Check passes."
+          gh pr create --base main --head "$branch" --title "$title" --body "${body_first}${extra}Imported from https://github.com/oscairn/$fork/releases/tag/$tag (\`$revision\`) by $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID: ${what}, signed with the publisher key. ${notice:+Not imported: $notice. }Merge once Check passes."
           if [ "$JOB_TOKEN" = true ]; then
             echo "::warning::Opened with the job's own token, which starts no workflow: close and reopen the pull request so Check runs, or set OSCAIRN_PR_TOKEN."
           fi
