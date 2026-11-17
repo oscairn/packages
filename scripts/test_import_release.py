@@ -99,7 +99,8 @@ def main(tool, plugin_check=None):
         packages = temp / "packages"
         (packages / "publishers").mkdir(parents=True)
         (packages / "packages").mkdir()
-        shutil.copytree(PREVIOUS, packages / "packages" / PREVIOUS.name, ignore=shutil.ignore_patterns("0.1.3*"))
+        # Only 0.1.4, the release the fixture is made from: a newer record here (its license files named otherwise) must not change what the test compares with.
+        shutil.copytree(PREVIOUS, packages / "packages" / PREVIOUS.name, ignore=lambda d, names: [n for n in names if not n.startswith("0.1.4.")])
         publisher = {"format": "oscairn.repository-publisher", "version": 1, "id": "org.oscairn", "name": "Oscairn", "key": test_key,
                      "verification": "https://oscairn.org/.well-known/oscairn-publisher.json"}
         (packages / "publishers" / "org.oscairn.json").write_text(json.dumps(publisher))
