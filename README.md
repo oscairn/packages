@@ -29,9 +29,9 @@ release in pieces.
 > **Status (2026-11-16).** Dependencies on packages of any kind (`dependencies.packages`), the rule
 > that a sample or waveform file is a piece of its own, and the manifest's `init` field are in this
 > repository. The first release of the types package, `org.oscairn.sample-types` 1.0.0, is not:
-> a new package's first release is signed by the owner by hand (`import-release.py` refuses an id
-> with no earlier release; the one exception, a plugin's own `<plugin>.init` library, is described
-> under "The init library exception"), and no record of it has been added.
+> a new package id's first release goes through the import only when the dispatcher asks for it
+> (the `first-release` input, "A first release", below), or is signed by the owner by hand; no
+> record of it has been added.
 
 ## Submitting a package
 
@@ -301,7 +301,8 @@ address or its fork and tag, imports one through `scripts/import-release.py`:
 1. **verify** fetches the manifest and its files and checks the manifest against the schema, every
    file's SHA-256 and size, that the source is one of Oscairn's plugin repositories and its tag is
    `source.revision` there, each build's libraries, and that the license and license files are
-   the package's last release's (a difference fails, unless the run accepts a license change).
+   the package's last release's (a difference fails, unless the run accepts a license change;
+   a first release has none to compare with, see "A first release").
    The packages in the manifest's `dependencies.packages` (the schema allows only
    `{id, version}` beside `dependencies.assets`) must be here, not yanked, at that version or
    later, must not be the package itself, and must not need it back, directly or through others;
@@ -349,9 +350,25 @@ key, and checks that a tampered hash, a changed license file and a build with an
 refused, and also covers `dependencies.packages` and `init` (the init library exception: both packages published, each of its conditions refused, a hostile archive refused before anything is written). Check runs it, with
 `scripts/test_build_index.py <oscairn-sign>` (the index builder on a sample tree).
 
-**The init library exception.** The rule that a new package id's first release is signed by the
-owner by hand stands, and `import-release.py` imports only plugin releases. The owner has allowed
-one exception, and only this one: **a plugin release's import also publishes that plugin's own init
+**A first release.** An id with no release here is refused by the import, naming the flag, unless
+the run is dispatched with the `first-release` input (`--first-release` to `import-release.py`),
+which the owner has allowed (2026-11-17) for a new id's first release, each time asked for
+explicitly. Everything else is as strict as for any version: the source one of Oscairn's plugin
+repositories, the release manifest, every digest, the license files present, plugin-check on each
+platform, the candidate, and the publisher-signing environment's approval before the **sign** job
+runs (the job is behind that environment on every path; nothing else holds the key). The flag
+on an id that has a release is an error, so it cannot be left on by habit; an id `removed.json`
+lists is refused with or without it; and the publisher is only Oscairn's own, `org.oscairn`
+(a first release's tags are empty and its channel `stable`, to be edited in the pull request).
+There is no earlier license to compare with, so the run's summary, the candidate's
+`first-release.txt` and the pull request's description show the new id's license, license files and
+source plainly: the approver accepts them for the first time. The pull request's title says "first
+release of a new package id". Without the flag, or when the id's publisher is not Oscairn, the
+first release is signed by the owner by hand, as in step 4 above (`sign.sh`, then `record`, which now creates
+the package's folder).
+
+**The init library exception.** `import-release.py` imports only plugin releases. The owner has allowed
+one exception beside a first release: **a plugin release's import also publishes that plugin's own init
 library**, signed with the same publisher key under the same single approval, in the same pull
 request. A host opens a saved Sound only with the exact plugin version it was saved with, so an init
 library changes with every plugin release, and publishing each by hand would stop every release.
@@ -360,9 +377,10 @@ a message naming it, with no plan or `sign.sh` made and nothing added here:
 
 - **The id.** The library's `library.json` id is exactly `<the plugin package's id>.init`
   (`org.oscairn.sampler` may publish `org.oscairn.sampler.init` and no other id).
-- **The plugin is not new.** Its package id already has a release here, whose publisher the
-  library takes. A brand-new plugin's first release is still by hand, and so is its init library
-  that once; the library of every later release is published by the import.
+- **The plugin's publisher.** The library takes the publisher of the plugin's previous release
+  here, or `org.oscairn` for the plugin's first release (a run with `first-release`); a plugin with
+  no release here and no `first-release` is refused. The library of every later release is
+  published by the import.
 - **The publisher.** That publisher signs it, and every earlier record of the init library here
   is the same publisher's.
 - **Its version.** The library's release is the plugin package's version, `dependencies.packages`

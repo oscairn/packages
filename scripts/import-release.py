@@ -7,7 +7,7 @@ A fork's tag vX.Y.Z or oscairn-vX.Y.Z publishes a GitHub release holding oscairn
 licenses.tar.gz. Steps, each a command, as .github/workflows/import.yml runs them:
 
     import-release.py verify (--release <url> | --repo oscairn/<fork> --tag [oscairn-]vX.Y.Z | --from <url>)
-                             --out <candidate> [--packages .] [--accept-license-change]
+                             --out <candidate> [--packages .] [--accept-license-change] [--first-release]
         Fetches the manifest and its files into <candidate>, and checks: the manifest against the
         schema; every file's SHA-256 and size; the source is an allowed Oscairn plugin repository and the tag is
         source.revision there; each build's libraries (Mach-O and ELF read here, so on any
@@ -23,6 +23,11 @@ licenses.tar.gz. Steps, each a command, as .github/workflows/import.yml runs the
         published beside the plugin, under README.md's init library exception: its package id must be
         <plugin id>.init, it is read without unpacking (INIT_FOLDERS only, no builds, no links, at
         most INIT_MAX_BYTES) and plan.json's initPackage says how it is signed and recorded.
+        A package id with no release here is refused unless --first-release says this is its first
+        release; the flag on an id that has a release is refused, and an id removed.json lists
+        is refused either way. A first release is Oscairn's own publisher's (OWN_PUBLISHER), has
+        no earlier license to compare with, and every other check is as strict; the output,
+        first-release.txt and plan.json (firstRelease) show its license and source.
     import-release.py plugin-check --candidate <candidate> --platform <p> --plugin-check <tool>
         Plays each plugin of that platform's build through oscairn-plugin-check, on that platform
         (with --library <init library> --sound <Sound> when the manifest has an `init`).
@@ -84,6 +89,7 @@ INIT_FOLDERS = ("Sounds", "Samples", "Waveforms", "Types", "Licenses")  # no Plu
 MAX_SOUND = 4 << 20
 MAX_BESIDE = 95 * 2**20  # an archive beside its record: GitHub refuses files over 100 MiB
 PLUGIN_CHECK_SECONDS = 600
+OWN_PUBLISHER = "org.oscairn"  # the only publisher a first release may be for
 
 
 class Refused(Exception):
@@ -298,11 +304,11 @@ def removed_versions(packages):
 
 # The previous release ------------------------------------------------------------------------
 
-def previous_release(packages, package_id, init=False):
+def previous_release(packages, package_id):
     records = sorted((packages / "packages" / package_id).glob("*.json"), key=lambda p: version_key(p.stem))
     if not records:
-        raise Refused(f"no release of {package_id} here yet: its first release is submitted by hand (README.md)"
-                      + (f", and so is its init library {package_id}.init that once" if init else ""))
+        raise Refused(f"no release of {package_id} here yet: a first release of a new package id is imported only when asked for"
+                      " (--first-release; the workflow's first-release input), or is submitted by hand (README.md)")
     path = records[-1]
     return path, json.loads(path.read_bytes())
 
@@ -673,6 +679,16 @@ def verify(args):
         problems.append(f"{package['id']} {package['version']} was removed (removed.json): a removed version is never published again; publish a new version")
     if (packages / "packages" / package["id"] / f"{package['version']}.json").exists():
         problems.append(f"{package['id']} {package['version']} is here already: a version never changes once merged")
+    has_records = any((packages / "packages" / package["id"]).glob("*.json"))
+    if args.first_release and has_records:
+        problems.append(f"--first-release: {package['id']} has a release here already, so this is not its first; run again without it")
+    if not has_records and any(e.get("id") == package["id"] for e in removed_versions(packages)):
+        problems.append(f"{package['id']} has no release here, and removed.json lists it: a removed package id is not imported again as a new one")
+    elif not has_records and not args.first_release:
+        problems.append(f"no release of {package['id']} here yet: a first release of a new package id is imported only when asked for"
+                        " (--first-release; the workflow's first-release input), or is submitted by hand (README.md)")
+    if args.first_release and not has_records and not (packages / "publishers" / f"{OWN_PUBLISHER}.json").exists():
+        problems.append(f"publishers/{OWN_PUBLISHER}.json is not here: a first release is {OWN_PUBLISHER}'s")
     package_needs = manifest.get("dependencies", {}).get("packages", [])
     init = manifest.get("init")
     arriving = {f"{package['id']}.init"} if init else set()  # the init library arrives in this run, so it need not be here yet
@@ -734,17 +750,29 @@ def verify(args):
             (out / f["file"]).write_bytes(data)
 
     # The license, against the package's last release.
-    path, previous = previous_release(packages, package["id"], init=bool(init))
+    first = args.first_release
+    if first:
+        path, previous = None, {"publisher": OWN_PUBLISHER, "tags": [], "channel": "stable"}
+    else:
+        path, previous = previous_release(packages, package["id"])
     init_plan = None
     if init and init_path is not None and init_path.exists() and init_path.stat().st_size == init["library"]["size"] \
             and sha256_file(init_path) == init["library"]["sha256"]:
         init_plan = init_exception(packages, package, manifest, init_path, held, previous["publisher"], args.accept_license_change, problems)
         if init_plan:
             init_plan["channel"] = previous.get("channel", "stable")
-    with tempfile.TemporaryDirectory() as temp:
-        before = previous_license_files(path, previous, Path(temp))
     now = {Path(f["file"]).name: f["sha256"] for f in manifest["licenseFiles"]}
-    changes = [f"license {previous.get('license')} becomes {manifest['license']}"] if manifest["license"] != previous.get("license") else []
+    if first:
+        # Nothing to compare with: whoever approves the signing accepts this license and source for the first time.
+        before, changes = now, []
+        shown = (f"first release of a new package id: {package['id']} {package['version']} ({package['name']})\n"
+                 f"publisher: {OWN_PUBLISHER}\nlicense: {manifest['license']}\n"
+                 f"license files: {', '.join(sorted(now)) or 'none'}\n"
+                 f"source: {source['url']} {source['tag']} ({source['revision']})\n")
+    else:
+        with tempfile.TemporaryDirectory() as temp:
+            before = previous_license_files(path, previous, Path(temp))
+        changes = [f"license {previous.get('license')} becomes {manifest['license']}"] if manifest["license"] != previous.get("license") else []
     changes += [f"license file {n} is new" for n in sorted(set(now) - set(before))]
     changes += [f"license file {n} is gone" for n in sorted(set(before) - set(now))]
     changes += [f"license file {n} changed" for n in sorted(set(now) & set(before)) if now[n] != before[n]]
@@ -754,6 +782,9 @@ def verify(args):
         problems.append(f"the license is not {path}'s (if that is meant, run again accepting a license change):\n  " + "\n  ".join(changes))
     if problems:
         raise Refused("\n".join(problems))
+    if first:
+        (out / "first-release.txt").write_text(shown)
+        print(shown, end="")
 
     publisher = previous["publisher"]
     plan = {
@@ -768,6 +799,7 @@ def verify(args):
         "plugins": manifest["plugins"],
         "builds": [{"platform": b["platform"], "path": f"builds/{b['platform']}/{b['file']}"} for b in builds],
         "notImported": left_out,
+        **({"firstRelease": True} if first else {}),
         "archive": f"out/{package['id']}-{package['version']}.olib",
     }
     (out / "plan.json").write_text(json.dumps(plan, indent=2) + "\n")
@@ -920,6 +952,7 @@ def record(args):
     if init:
         write_init_record(packages, init, init_olib)
     folder = packages / "packages" / plan["id"]
+    folder.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(olib, folder / f"{plan['version']}.olib")
     r = {"format": "oscairn.repository-release", "version": 1, "id": plan["id"], "release": plan["version"], "publisher": plan["publisher"],
          "summary": plan["summary"], "license": plan["license"], "tags": plan["tags"], "channel": plan["channel"],
@@ -944,6 +977,7 @@ def main():
     v.add_argument("--out", required=True)
     v.add_argument("--packages", default=".")
     v.add_argument("--accept-license-change", action="store_true")
+    v.add_argument("--first-release", action="store_true", help="the package id has no release here: import its first (refused if it has one)")
     c = steps.add_parser("plugin-check")
     c.add_argument("--candidate", required=True)
     c.add_argument("--platform", required=True)
