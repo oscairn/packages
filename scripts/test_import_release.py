@@ -13,12 +13,14 @@ a macOS build with an LC_RPATH, a Linux build with a RUNPATH and too new a glibc
 is not the manifest's revision are each refused, as is a tag not vX.Y.Z or oscairn-vX.Y.Z of the
 package's version. Dependencies on other packages (dependencies.packages: present, missing, yanked,
 itself, a cycle) and an init library (fetched, verified, passed to the check as --library and --sound
-through a stand-in for oscairn-plugin-check) are covered too, as are unknown keys. The key lives only
+through a stand-in for oscairn-plugin-check, then signed and recorded with its plugin under the init
+library exception, with each condition and hostile archives refused) are covered too, as are unknown keys. The key lives only
 in a temporary folder.
 """
 import functools
 import hashlib
 import http.server
+import importlib.util
 import io
 import json
 import platform
@@ -345,23 +347,52 @@ def main(tool, plugin_check=None):
             _, result = verify()
             check(result.returncode == 1 and "the manifest is not valid" in result.stderr, f"{what} is refused: " + result.stderr.strip())
 
-        # An init library: fetched and checked as a build, kept in the candidate, passed to the check on
-        # every platform, and in no package.
-        def library_of(package_id):
+        # An init library, published with its plugin under README.md's init library exception: fetched
+        # and checked as a build is, kept in the candidate, played by plugin-check, and signed with the
+        # plugin by the same key; every condition refused with its message, and nothing written.
+        init_id, plays_now = "org.oscairn.arpeggiator.init", (("org.oscairn.arpeggiator", "0.1.4"),)
+        source_now = {"url": "https://github.com/oscairn/arpeggiator", "revision": revision}
+
+        def library_of(library_id=init_id, sound="init", plays=plays_now, license_="MIT", source=source_now, extra=None,
+                       manifest=lambda m: None, symlink=None, executable=None, second_manifest=None, nodes_list=False, text=True):
+            """An init library archive, written entry by entry (as oscairn writes one, library.json first)."""
+            document = {"format": "oscairn.sound", "version": 8,
+                        "nodes": {f"node-{i + 1}": {"plugin": {"format": "clap", "id": i_, "version": v, "pathHint": ""}} for i, (i_, v) in enumerate(plays)}}
+            if nodes_list:
+                document["nodes"] = list(document["nodes"].values())
+            files = {"Sounds/Init.oscairn/sound.json": json.dumps(document).encode(), **({"Licenses/LICENSE": b"MIT license text\n"} if text else {}), **(extra or {})}
+            m = {"format": "oscairn.library", "version": 3, "id": library_id, "name": "Init", "kind": "library", "license": license_, "source": source,
+                 "items": [{"kind": "sound", "id": sound, "name": "Init", "path": "Sounds/Init.oscairn", "signatures": []}],
+                 "plugins": [], "assets": None, "dependencies": {"assets": []}, "files": {n: hashlib.sha256(d).hexdigest() for n, d in files.items()}}
+            manifest(m)
             buffer = io.BytesIO()
-            with zipfile.ZipFile(buffer, "w") as z:
-                z.writestr("library.json", json.dumps({"format": "oscairn.library", "version": 3, "id": package_id}))
+            with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as z:
+                z.writestr("library.json", json.dumps(m))
+                if second_manifest:
+                    z.writestr("library.json", json.dumps(second_manifest))
+                for n, d in files.items():
+                    info = zipfile.ZipInfo(n)
+                    info.create_system = 3
+                    info.compress_type = zipfile.ZIP_DEFLATED
+                    info.external_attr = (0o100755 if n == executable else 0o120777 if n == symlink else 0o100644) << 16
+                    z.writestr(info, d)
             return buffer.getvalue()
 
-        content = library_of("org.oscairn.sample-content")
-        record_of("org.oscairn.sample-content", "1.0.0")
+        content = library_of()
+        record_of(init_id, "0.1.0")  # an earlier init library, by the same publisher
+        (packages / "packages" / init_id / "0.1.0.json").write_text(json.dumps({"id": init_id, "release": "0.1.0", "publisher": "org.oscairn", "license": "MIT", "yanked": None}))
 
-        def with_init(data=content, sound="org.oscairn.sample-content.piano", sha=None, needs=(("org.oscairn.sample-content", "1.0.0"),), file="init-library.olib"):
+        def with_init(data=content, sound="init", sha=None, needs=((init_id, "0.1.5"),), file="init-library.olib", license_=None, size=None):
             def change(m):
                 (served / file).write_bytes(data)
-                m["init"] = {"library": {"file": file, "sha256": sha or hashlib.sha256(data).hexdigest(), "size": len(data)}, "sound": sound}
+                m["init"] = {"library": {"file": file, "sha256": sha or hashlib.sha256(data).hexdigest(), "size": size or len(data)}, "sound": sound}
+                if license_:
+                    m["init"]["library"]["license"] = license_
                 needing(*needs)(m)
             return change
+
+        def tree(root):
+            return sorted(str(f.relative_to(root)) for f in root.rglob("*") if f.is_file())
 
         stub = temp / "stub-plugin-check"
         stub.write_text(f"#!{sys.executable}\nimport json, sys\nopen({str(temp / 'stub-calls')!r}, 'a').write(json.dumps(sys.argv[1:]) + '\\n')\nprint('a note effect: notes out')\n")
@@ -371,35 +402,190 @@ def main(tool, plugin_check=None):
         release(change=with_init())
         candidate, result = verify()
         plan = json.loads((candidate / "plan.json").read_bytes())
+        init_plan = plan.get("initPackage", {})
         check(result.returncode == 0 and (candidate / "init" / "init-library.olib").read_bytes() == content
-              and plan["init"] == {"library": "init/init-library.olib", "sound": "org.oscairn.sample-content.piano"}
-              and "init-library" not in (candidate / "sign.sh").read_text() and "piano" not in (candidate / "sign.sh").read_text(),
-              "an init library is fetched into the candidate and kept out of sign.sh: " + result.stdout + result.stderr)
+              and plan["init"] == {"library": "init/init-library.olib", "sound": "init"}
+              and init_plan.get("id") == init_id and init_plan.get("version") == "0.1.5" and init_plan.get("license") == "MIT"
+              and init_plan.get("source") == source_now and init_plan.get("publisher") == "org.oscairn",
+              "an init library is fetched into the candidate and planned as <plugin>.init at the plugin's version: " + result.stdout + result.stderr)
+        script = (candidate / "sign.sh").read_text()
+        check("cp init/init-library.olib out/org.oscairn.arpeggiator.init-0.1.5.olib" in script and f'archive "$key" out/{init_id}-0.1.5.olib' in script
+              and "plugin-package" in script and "init-library" not in script.split("plugin-package")[1].split("\n")[0],
+              "sign.sh signs the init library with the same key, and it is not in the plugin's package")
         calls.unlink(missing_ok=True)
         result = run(sys.executable, "-I", SCRIPT, "plugin-check", "--candidate", candidate, "--platform", "macos-arm64", "--plugin-check", stub)
         argv = json.loads(calls.read_text().splitlines()[0]) if calls.exists() else []
-        check(result.returncode == 0 and argv[-4:] == ["--library", str(candidate.resolve() / "init" / "init-library.olib"), "--sound", "org.oscairn.sample-content.piano"],
+        check(result.returncode == 0 and argv[-4:] == ["--library", str(candidate.resolve() / "init" / "init-library.olib"), "--sound", "init"],
               "plugin-check passes --library and --sound to oscairn-plugin-check: " + json.dumps(argv) + result.stdout + result.stderr)
+
+        # Both signed, recorded, and the index builds with both in one tree.
+        by_hand_init = temp / "by-hand-init"
+        shutil.copytree(candidate, by_hand_init)
+        result = run(sys.executable, "-I", SCRIPT, "sign", "--candidate", candidate, "--key", temp / "keys" / "test.key", "--oscairn-sign", tool)
+        check(result.returncode == 0, "it signs the plugin and its init library: " + result.stdout + result.stderr)
+        both = temp / "packages-both"
+        shutil.copytree(packages, both)
+        result = run(sys.executable, "-I", SCRIPT, "record", "--candidate", candidate, "--oscairn-sign", tool, "--packages", both)
+        check(result.returncode == 0 and "the init library, published under the init exception" in result.stdout, "it records both: " + result.stdout + result.stderr)
+        made_init = both / "packages" / init_id
+        result = run(tool, "verify", made_init / "0.1.5.olib")
+        check(result.returncode == 0 and f"archive {init_id} {test_id}" in result.stdout and "build " not in result.stdout,
+              "the init library's .olib verifies, signed by the test key, with no build: " + result.stdout + result.stderr)
+        r = json.loads((made_init / "0.1.5.json").read_bytes())
+        check(r["release"] == "0.1.5" and r["publisher"] == "org.oscairn" and r["license"] == "MIT" and r["source"] == source_now and r["platforms"] == []
+              and r["archive"]["path"] == "0.1.5.olib" and r["yanked"] is None and "dependencies" not in r, "its record has the plugin's version, publisher, license and source: " + json.dumps(r))
+        r = json.loads((both / "packages" / "org.oscairn.arpeggiator" / "0.1.5.json").read_bytes())
+        check(r["dependencies"]["packages"] == [{"id": init_id, "version": "0.1.5"}], "the plugin's record names the init library at this version")
+        checked = temp / "checked-both"
+        (checked / "packages" / "org.oscairn.arpeggiator").mkdir(parents=True)
+        (checked / "packages" / init_id).mkdir(parents=True)
+        shutil.copytree(both / "publishers", checked / "publishers")
+        shutil.copy(REPO / "repository-config.json", checked)
+        shutil.copy(REPO / "revoked.json", checked)
+        for f in ("0.1.5.json", "0.1.5.olib"):
+            shutil.copy(both / "packages" / "org.oscairn.arpeggiator" / f, checked / "packages" / "org.oscairn.arpeggiator")
+            shutil.copy(made_init / f, checked / "packages" / init_id)
+        index = lambda root: run(sys.executable, "-I", HERE / "build-index.py", "--check", "--oscairn-sign", tool, "--repo", root, "--cache", temp / "cache-init", "--out", temp / "site-init", "--serial", "0")
+        result = index(checked)
+        check(result.returncode == 0, "build-index.py --check passes the plugin and its init library arriving together: " + result.stdout + result.stderr)
+        shutil.rmtree(checked / "packages" / init_id)
+        result = index(checked)
+        check(result.returncode != 0 and f"needs the package {init_id} 0.1.5 or later, which this repository does not have" in result.stderr,
+              "and refuses the plugin without its init library: " + result.stderr)
+
+        # What was signed is what was checked.
+        spec = importlib.util.spec_from_file_location("import_release", SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        played = candidate / plan["initPackage"]["library"]
+        check(module.derived_problems(played, made_init / "0.1.5.olib") == [], "the published archive has the entries and bytes of the file that was played")
+        swapped = library_of(extra={"Licenses/LICENSE": b"another text\n"})
+        (temp / "swapped.olib").write_bytes(swapped)
+        problems = module.derived_problems(played, temp / "swapped.olib")
+        check(any("Licenses/LICENSE differs" in p for p in problems), "a changed entry is found: " + json.dumps(problems))
+        (temp / "extra.olib").write_bytes(library_of(extra={"Samples/extra.osp": b"x"}))
+        check(any("Samples/extra.osp is only in" in p for p in module.derived_problems(played, temp / "extra.olib")), "an added entry is found")
+        # record refuses an archive signed from other content than the file played.
+        tampered = temp / "candidate-tampered"
+        shutil.copytree(by_hand_init, tampered)
+        result = run(sys.executable, "-I", SCRIPT, "sign", "--candidate", tampered, "--key", temp / "keys" / "test.key", "--oscairn-sign", tool)
+        shutil.copyfile(temp / "swapped.olib", tampered / plan["initPackage"]["archive"])
+        run(tool, "archive", temp / "keys" / "test.key", tampered / plan["initPackage"]["archive"])
+        fresh = temp / "packages-tampered"
+        shutil.copytree(packages, fresh)
+        before = tree(fresh)
+        result = run(sys.executable, "-I", SCRIPT, "record", "--candidate", tampered, "--oscairn-sign", tool, "--packages", fresh)
+        check(result.returncode == 1 and "is not the file that was checked: Licenses/LICENSE differs" in result.stderr and tree(fresh) == before,
+              "record refuses an init archive made from other content, writing nothing: " + result.stderr)
+        # sign refuses a file changed after verify.
+        changed = temp / "candidate-changed"
+        shutil.copytree(by_hand_init, changed)
+        (changed / plan["initPackage"]["library"]).write_bytes(swapped)
+        result = run(sys.executable, "-I", SCRIPT, "sign", "--candidate", changed, "--key", temp / "keys" / "test.key", "--oscairn-sign", tool)
+        check(result.returncode == 1 and "is not the SHA-256 verify checked" in result.stderr and not (changed / "out").exists(), "sign refuses an init file that is not the one verify checked: " + result.stderr)
+        # And by hand, sign.sh gives the same.
+        result = run("sh", by_hand_init / "sign.sh", Path("keys") / "test.key", Path(tool).resolve(), cwd=temp)
+        check(result.returncode == 0 and module.derived_problems(played, by_hand_init / plan["initPackage"]["archive"]) == [], "sign.sh signs the init library too: " + result.stdout + result.stderr)
+
+        # The maintainers' writer: nodes a list, and no assets, dependencies or item signatures (but a license and source).
+        def writer_made(m):
+            for field in ("assets", "dependencies"):
+                del m[field]
+            del m["items"][0]["signatures"]
+        data = library_of(manifest=writer_made, nodes_list=True)
+        release(change=with_init(data=data))
+        candidate, result = verify()
+        check(result.returncode == 0, "an init library as the maintainers' writer makes it (nodes a list, no assets, dependencies or item signatures) verifies: " + result.stderr)
+        result = run(sys.executable, "-I", SCRIPT, "sign", "--candidate", candidate, "--key", temp / "keys" / "test.key", "--oscairn-sign", tool)
+        recorded_writer = temp / "packages-writer"
+        shutil.copytree(packages, recorded_writer)
+        check(result.returncode == 0, "and signs: " + result.stdout + result.stderr)
+        result = run(sys.executable, "-I", SCRIPT, "record", "--candidate", candidate, "--oscairn-sign", tool, "--packages", recorded_writer)
+        r = json.loads((recorded_writer / "packages" / init_id / "0.1.5.json").read_bytes()) if result.returncode == 0 else {}
+        check(result.returncode == 0 and r.get("license") == "MIT" and r.get("source") == source_now, "and records, with the license and the source: " + result.stderr + json.dumps(r))
+
         release()
         candidate, result = verify()
         calls.unlink(missing_ok=True)
         result = run(sys.executable, "-I", SCRIPT, "plugin-check", "--candidate", candidate, "--platform", "macos-arm64", "--plugin-check", stub)
         argv = json.loads(calls.read_text().splitlines()[0]) if calls.exists() else []
-        check(result.returncode == 0 and "--library" not in argv and "--sound" not in argv and "init" not in json.loads((candidate / "plan.json").read_bytes()),
-              "without init, neither is passed: " + json.dumps(argv))
-        release(change=with_init(sha="1" * 64))
+        script = (candidate / "sign.sh").read_text()
+        check(result.returncode == 0 and "--library" not in argv and "--sound" not in argv and "initPackage" not in json.loads((candidate / "plan.json").read_bytes())
+              and "init" not in script.replace("# ", ""), "a release without init is unchanged: neither is passed, nothing is planned for it: " + json.dumps(argv))
+
+        # Refusals: each condition, with its message, and nothing written by verify.
+        def refused(case, wanted, **options):
+            before = tree(packages)
+            change = options.pop("change", None)
+            release(change=change or with_init(**options))
+            candidate, result = verify()
+            check(result.returncode == 1 and wanted in result.stderr and not (candidate / "plan.json").exists() and not (candidate / "sign.sh").exists() and tree(packages) == before,
+                  f"{case} is refused, with nothing planned or written: " + result.stderr.strip()[-400:])
+
+        refused("a tampered init library", "init library) is not the size and SHA-256 the manifest gives", sha="1" * 64)
+        refused("an init library that is not an archive", "is not a library archive", data=b"not an archive")
+        refused("an init library its package does not need", "dependencies.packages must name org.oscairn.arpeggiator.init at 0.1.5", needs=())
+        refused("an init file named as the manifest", "is also another file of the release", file="oscairn-release.json")
+        # (a) the id
+        record_of("org.oscairn.sample-content", "1.0.0")
+        refused("another library's id (not <plugin>.init)", "a release may publish only its own init library, org.oscairn.arpeggiator.init",
+                data=library_of(library_id="org.oscairn.sample-content"), needs=(("org.oscairn.sample-content", "1.0.0"),))
+        refused("a library under the plugin's id but one more part", "a release may publish only its own init library", data=library_of(library_id=init_id + ".extra"))
+        refused("an init library under another plugin's id", "a release may publish only its own init library", data=library_of(library_id="org.oscairn.sampler.init"))
+        # (b) a brand-new plugin
+        refused("an init library with a brand-new plugin (first release by hand)", "no release of org.oscairn.brandnew here yet: its first release is submitted by hand (README.md), and so is its init library org.oscairn.brandnew.init that once",
+                change=lambda m: (with_init(data=library_of(library_id="org.oscairn.brandnew.init"), needs=(("org.oscairn.brandnew.init", "0.1.5"),))(m),
+                                  m["package"].update(id="org.oscairn.brandnew")))
+        # (c) the publisher
+        (packages / "packages" / init_id / "0.1.0.json").write_text(json.dumps({"id": init_id, "release": "0.1.0", "publisher": "org.other", "license": "MIT", "yanked": None}))
+        refused("an init library whose earlier release is another publisher's", "is published by org.other, not org.oscairn")
+        (packages / "packages" / init_id / "0.1.0.json").write_text(json.dumps({"id": init_id, "release": "0.1.0", "publisher": "org.oscairn", "license": "MIT", "yanked": None}))
+        # (d) the license and source
+        refused("an init library under another license than the plugin's", "library.json's license is \"GPL-3.0-or-later\", not MIT", data=library_of(license_="GPL-3.0-or-later"))
+        refused("an init library whose stated license is not the archive's", "library.json's license is \"MIT\", not CC0-1.0", license_="CC0-1.0")
+        release(change=with_init(data=library_of(license_="CC0-1.0"), license_="CC0-1.0"))
+        candidate, result = verify()
+        check(result.returncode == 1 and "the init library's license is not" in result.stderr and "MIT becomes CC0-1.0" in result.stderr,
+              "a license other than the init library's last release's is refused: " + result.stderr)
+        candidate, result = verify("--accept-license-change")
+        check(result.returncode == 0 and json.loads((candidate / "plan.json").read_bytes())["initPackage"]["license"] == "CC0-1.0",
+              "init.library.license is the record's license once the change is accepted: " + result.stdout + result.stderr)
+        refused("an init library with no license", "library.json's license is null, not MIT", data=library_of(manifest=lambda m: m.pop("license")))
+        refused("an init library with no source", "library.json's source is null", data=library_of(manifest=lambda m: m.pop("source")))
+        refused("an init library with a LicenseRef- license and no text under Licenses/", "names a LicenseRef- and the archive has no text under Licenses/",
+                data=library_of(license_="LicenseRef-X", text=False), license_="LicenseRef-X")
+        refused("an init library whose source is not the plugin's", "library.json's source is", data=library_of(source={"url": "https://github.com/oscairn/arpeggiator", "revision": "2" * 40}))
+        # (e) the contents
+        refused("an entry that climbs out", "climbs out", data=library_of(extra={"Samples/../../evil": b"x"}))
+        refused("an absolute entry", "is absolute", data=library_of(extra={"/etc/evil": b"x"}))
+        refused("an entry with a backslash", "uses a backslash", data=library_of(extra={"Samples\\evil": b"x"}))
+        refused("a hidden entry", "is hidden", data=library_of(extra={"Licenses/.hidden": b"x"}))
+        refused("a symbolic link", "is a symbolic link", data=library_of(extra={"Licenses/link": b"/etc/passwd"}, symlink="Licenses/link"))
+        refused("an executable file", "nothing executable goes in an init library", data=library_of(extra={"Licenses/run": b"text"}, executable="Licenses/run"))
+        refused("an executable's bytes", "is an executable file", data=library_of(extra={"Samples/x.osp": b"\x7fELF" + bytes(60)}))
+        refused("a plugin build inside", "is outside Sounds/, Samples/", data=library_of(extra={"Plugins/clap/x@1/linux-arm64/x.clap": b"x"}))
+        refused("a manifest listing plugins", "lists plugins or an asset library", data=library_of(manifest=lambda m: m.update(plugins=[{"format": "clap", "id": "x", "version": "1", "name": "x", "builds": []}])))
+        refused("assets outside the folders", "is outside Sounds/", data=library_of(extra={"Assets/abc/big.wav": b"x"}))
+        refused("a second library.json (a second library id)", "is not a library archive: it has an entry twice",
+                data=library_of(second_manifest={"format": "oscairn.library", "version": 3, "id": "org.evil.other", "name": "x", "kind": "library", "items": [], "plugins": [], "files": {}}))
+        refused("entries that differ only in case", "differ only in case", data=library_of(extra={"Licenses/A": b"1", "Licenses/a": b"2"}))
+        refused("more than 8 MiB of content", "over the 8388608 an init library may hold", data=library_of(extra={"Samples/big.osp": bytes(9 << 20)}))
+        refused("a declared size over 8 MiB", "init.library.size 9000000 is over the 8388608 bytes", size=9000000)
+        refused("a file not as library.json lists it", "is not the SHA-256 library.json lists", data=library_of(manifest=lambda m: m["files"].update({"Licenses/LICENSE": "0" * 64})))
+        refused("a Sound that is not the one init.sound names", "library.json's items are not exactly the one Sound other", sound="other")
+        refused("a Sound saved with another version of the plugin", "was saved with org.oscairn.arpeggiator 0.1.3, and this release's is 0.1.4", data=library_of(plays=(("org.oscairn.arpeggiator", "0.1.3"),)))
+        refused("a Sound playing another plugin", "plays org.oscairn.other, which this release does not have", data=library_of(plays=(("org.oscairn.arpeggiator", "0.1.4"), ("org.oscairn.other", "1"))))
+        refused("a Sound with no plugin", "plays none of this release's plugins", data=library_of(plays=()))
+        # (f) a version never changes
+        (packages / "packages" / init_id / "0.1.5.json").write_text(json.dumps({"id": init_id, "release": "0.1.5", "publisher": "org.oscairn", "license": "MIT", "yanked": None}))
+        refused("an init library version already here", f"{init_id} 0.1.5 is here already: a version never changes once merged")
+        (packages / "packages" / init_id / "0.1.5.json").unlink()
+        # (g) the plugin names it at its own version, and the init exception reaches no other dependency
+        refused("a dependency on an older init library", "dependencies.packages must name org.oscairn.arpeggiator.init at 0.1.5", needs=((init_id, "0.1.4"),))
+        release(change=with_init(needs=((init_id, "0.1.5"), ("org.oscairn.nothing", "1.0.0"))))
         _, result = verify()
-        check(result.returncode == 1 and "init library) is not the size and SHA-256 the manifest gives" in result.stderr, "a tampered init library is refused: " + result.stderr)
-        release(change=with_init(data=b"not an archive"))
-        _, result = verify()
-        check(result.returncode == 1 and "is not a library archive" in result.stderr, "an init library that is not an archive is refused: " + result.stderr)
-        release(change=with_init(needs=(("org.oscairn.sample-types", "1.0.0"),)))
-        _, result = verify()
-        check(result.returncode == 1 and "the init library is org.oscairn.sample-content, which the manifest's dependencies.packages does not name" in result.stderr,
-              "an init library its package does not need is refused: " + result.stderr)
-        release(change=with_init(file="oscairn-release.json"))
-        _, result = verify()
-        check(result.returncode == 1 and "is also another file of the release" in result.stderr, "an init file named as the manifest is refused: " + result.stderr)
+        check(result.returncode == 1 and "needs the package org.oscairn.nothing 1.0.0 or later" in result.stderr, "the exception covers the init library only: another missing package is still refused: " + result.stderr)
+        shutil.rmtree(packages / "packages" / init_id)
         server.shutdown()
     finally:
         shutil.rmtree(temp, ignore_errors=True)

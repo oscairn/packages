@@ -115,7 +115,7 @@
       }
     },
     "init": {
-      "description": "For an instrument that is silent until it has content: a library archive shipped as a release file, and the Sound in it that oscairn-plugin-check plays (--library, --sound). It is not put in the package; the library is a package of its own that dependencies.packages names",
+      "description": "For an instrument that is silent until it has content: a library archive shipped as a release file, and the Sound in it that oscairn-plugin-check plays (--library, --sound). It is not put in the package; the library is a package of its own, <package id>.init, that dependencies.packages names at this release's version, and the repository's import publishes it with the plugin",
       "type": "object",
       "required": ["library", "sound"],
       "additionalProperties": false,
@@ -127,7 +127,8 @@
           "properties": {
             "file": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
             "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-            "size": { "type": "integer", "minimum": 1, "maximum": 1992294400 }
+            "size": { "type": "integer", "minimum": 1, "maximum": 1992294400 },
+            "license": { "type": "string", "minLength": 1, "maxLength": 256, "description": "The init library's license, an SPDX expression; its library.json must say the same. Absent: the plugin's `license`" }
           }
         },
         "sound": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:@+/-]{0,255}$" }
