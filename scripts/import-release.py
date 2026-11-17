@@ -57,7 +57,7 @@ MANIFEST = "oscairn-release.json"
 LICENSES = "licenses.tar.gz"
 FORKS = {f"https://github.com/oscairn/{name}" for name in ("dexed", "surge", "sfizz", "sst-effects", "setBfree", "arpeggiator")}
 # First-party plugins, not forks.
-FIRST_PARTY = {f"https://github.com/oscairn/{name}" for name in ("va", "sampler")}
+FIRST_PARTY = {f"https://github.com/oscairn/{name}" for name in ("va", "sampler", "fm")}
 # One row per platform: the runner plugin-check runs on, and the binary a build must be
 # (Mach-O CPU type or ELF machine). Another platform is another row.
 PLATFORMS = {
