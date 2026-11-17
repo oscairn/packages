@@ -1,5 +1,54 @@
 {
   "format": "oscairn.repository-removals",
   "version": 1,
-  "versions": []
+  "versions": [
+    {
+      "id": "org.oscairn.fm",
+      "version": "0.4.4",
+      "reason": "The old FM engine; the id now belongs to a different engine, first released here as 0.6.0",
+      "date": "2026-11-17"
+    },
+    {
+      "id": "org.oscairn.fm",
+      "version": "0.4.5",
+      "reason": "The old FM engine; the id now belongs to a different engine, first released here as 0.6.0",
+      "date": "2026-11-17"
+    },
+    {
+      "id": "org.oscairn.fm",
+      "version": "0.4.6",
+      "reason": "The old FM engine; the id now belongs to a different engine, first released here as 0.6.0",
+      "date": "2026-11-17"
+    },
+    {
+      "id": "org.oscairn.fm",
+      "version": "0.4.7",
+      "reason": "The old FM engine; the id now belongs to a different engine, first released here as 0.6.0",
+      "date": "2026-11-17"
+    },
+    {
+      "id": "org.oscairn.fm",
+      "version": "0.4.8",
+      "reason": "The old FM engine; the id now belongs to a different engine, first released here as 0.6.0",
+      "date": "2026-11-17"
+    },
+    {
+      "id": "org.oscairn.fm",
+      "version": "0.5.1",
+      "reason": "The old FM engine; the id now belongs to a different engine, first released here as 0.6.0",
+      "date": "2026-11-17"
+    },
+    {
+      "id": "org.oscairn.sampler",
+      "version": "0.6.2",
+      "reason": "The old sampler; the id now belongs to the new Sampler, first released here as 0.9.5",
+      "date": "2026-11-17"
+    },
+    {
+      "id": "org.oscairn.sampler",
+      "version": "0.6.3",
+      "reason": "The old sampler; the id now belongs to the new Sampler, first released here as 0.9.5",
+      "date": "2026-11-17"
+    }
+  ]
 }
