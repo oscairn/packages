@@ -1,0 +1,29 @@
+{
+  "format": "oscairn.repository-release",
+  "version": 1,
+  "id": "org.oscairn.arpeggiator",
+  "release": "0.1.8",
+  "publisher": "org.oscairn",
+  "summary": "Oscairn's MIDI arpeggiator (a note effect), with Montage-style phrases, recording and tempo sync.",
+  "license": "MIT",
+  "tags": [
+    "note-effect",
+    "arpeggiator"
+  ],
+  "channel": "stable",
+  "platforms": [
+    "linux-arm64",
+    "linux-x86_64",
+    "macos-arm64"
+  ],
+  "source": {
+    "url": "https://github.com/oscairn/arpeggiator",
+    "revision": "0424d4929d81d9bf4ad5d070f8f03084b611c395"
+  },
+  "archive": {
+    "path": "0.1.8.olib",
+    "sha256": "7f138fe574f353c517b82c93ec55179f821508cb6ffd48592dd04bbb460f5936",
+    "size": 192858
+  },
+  "yanked": null
+}
