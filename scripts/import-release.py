@@ -19,15 +19,20 @@ licenses.tar.gz. Steps, each a command, as .github/workflows/import.yml runs the
         manifest's dependencies.packages names must be here (not yanked, at that version or later),
         none the package itself, and none that needs the package back, directly or through others.
         An `init` (an init library archive and the Sound in it) is fetched and verified like a build;
-        it stays in the candidate for plugin-check and is never put in the package.
+        it stays in the candidate for plugin-check and is never put in the plugin's package. It is
+        published beside the plugin, under README.md's init library exception: its package id must be
+        <plugin id>.init, it is read without unpacking (INIT_FOLDERS only, no builds, no links, at
+        most INIT_MAX_BYTES) and plan.json's initPackage says how it is signed and recorded.
     import-release.py plugin-check --candidate <candidate> --platform <p> --plugin-check <tool>
         Plays each plugin of that platform's build through oscairn-plugin-check, on that platform
         (with --library <init library> --sound <Sound> when the manifest has an `init`).
     import-release.py sign --candidate <candidate> --key <key> --oscairn-sign <tool>
-        What sign.sh does: signs each build and packs and signs the archive. Nothing else sees the key.
+        What sign.sh does: signs each build and packs and signs the archive, and signs a copy of the init
+        library with `oscairn-sign archive`. Nothing else sees the key.
     import-release.py record --candidate <candidate> --oscairn-sign <tool> [--packages .]
         Checks the archive with `oscairn-sign verify` against the publisher's key and writes
-        packages/<id>/<version>.json and .olib.
+        packages/<id>/<version>.json and .olib, and the init library's the same way, after checking that
+        what was signed holds the entries and bytes of the file plugin-check played.
 
 Standard library only. Exits 1 and says every problem when anything is wrong.
 """
@@ -72,6 +77,11 @@ NEWEST = {"GLIBC_": (2, 44), "GLIBCXX_": (3, 4, 34)}
 MAX_FILE = 1900 * 2**20  # as the schema's build size
 MAX_MANIFEST = 1 << 20
 MAX_LICENSE = 16 << 20
+# The init library exception (README.md): what a library published with its plugin may hold.
+INIT_MAX_BYTES = 8 << 20  # the archive, and its entries' sizes added up
+INIT_MAX_ENTRIES = 256
+INIT_FOLDERS = ("Sounds", "Samples", "Waveforms", "Types", "Licenses")  # no Plugins/, no Assets/
+MAX_SOUND = 4 << 20
 MAX_BESIDE = 95 * 2**20  # an archive beside its record: GitHub refuses files over 100 MiB
 PLUGIN_CHECK_SECONDS = 600
 
@@ -282,10 +292,11 @@ def library_problems(path, platform):
 
 # The previous release ------------------------------------------------------------------------
 
-def previous_release(packages, package_id):
+def previous_release(packages, package_id, init=False):
     records = sorted((packages / "packages" / package_id).glob("*.json"), key=lambda p: version_key(p.stem))
     if not records:
-        raise Refused(f"no release of {package_id} here yet: its first release is submitted by hand (README.md)")
+        raise Refused(f"no release of {package_id} here yet: its first release is submitted by hand (README.md)"
+                      + (f", and so is its init library {package_id}.init that once" if init else ""))
     path = records[-1]
     return path, json.loads(path.read_bytes())
 
@@ -321,7 +332,7 @@ def live_releases(packages, package_id):
     return sorted(records, key=lambda x: version_key(x[0]), reverse=True)
 
 
-def package_dependency_problems(packages, package_id, needs):
+def package_dependency_problems(packages, package_id, needs, arriving=()):
     """As build-index.py checks `dependencies.packages` (each package here, of any kind, not yanked, at
     that version or later), and that none is the package itself or needs it back: the device
     refuses a cycle when it installs, and a release that makes one should not be published."""
@@ -329,6 +340,8 @@ def package_dependency_problems(packages, package_id, needs):
     for need in needs:
         if need["id"] == package_id:
             problems.append(f"{package_id} cannot depend on itself (dependencies.packages names it)")
+            continue
+        if need["id"] in arriving:  # the init library, published in this very run (init_problems checks it)
             continue
         have = live_releases(packages, need["id"])
         if not any(version_key(v) >= version_key(need["version"]) for v, _ in have):
@@ -347,6 +360,219 @@ def package_dependency_problems(packages, package_id, needs):
                     problems.append(f"a cycle of package dependencies: {' -> '.join(chain + [package_id])}")
                 else:
                     stack.append((further.get("id"), chain + [further.get("id")]))
+    return problems
+
+
+# The init library (README.md, "The init library exception") ----------------------------------
+
+EXECUTABLE_MAGIC = (b"\x7fELF", b"MZ", b"#!", b"\xfe\xed\xfa\xce", b"\xfe\xed\xfa\xcf", b"\xce\xfa\xed\xfe", b"\xcf\xfa\xed\xfe",
+                    b"\xca\xfe\xba\xbe", b"\xca\xfe\xba\xbf", b"\xbe\xba\xfe\xca")
+
+
+def init_entry_name_problem(name):
+    """Why an archive entry's name is refused (as oscairn's reader refuses it), or None."""
+    path = name[:-1] if name.endswith("/") else name
+    if not path or len(name.encode("utf-8", "replace")) > 1024:
+        return "has an empty or over-long name"
+    if name.startswith("/") or "\\" in name or ":" in name or any(ord(c) < 32 or ord(c) == 127 for c in name):
+        return "is absolute or names a drive, uses a backslash or has a control character"
+    parts = path.split("/")
+    if any(part in ("", ".", "..") for part in parts):
+        return "climbs out or has an empty component"
+    if any(part.startswith(".") for part in parts):
+        return "is hidden"
+    return None
+
+
+def init_archive_problems(path, library_id, plugins, sound, license_, source):
+    """What the init library exception refuses in the archive at `path`, read in place (nothing is
+    unpacked here): every entry a safe path in INIT_FOLDERS, no link or executable, no plugin build,
+    at most INIT_MAX_ENTRIES entries and INIT_MAX_BYTES, its manifest this library's (one id, one
+    Sound, the license and source stated), every entry listed in `files` with its SHA-256, and the
+    Sound's nodes the release's own plugins at the versions the release has. Returns (problems, manifest)."""
+    problems = []
+    try:
+        z = zipfile.ZipFile(path)
+    except (zipfile.BadZipFile, OSError) as e:
+        return [f"is not a library archive: {e}"], None
+    with z:
+        infos = z.infolist()
+        if len(infos) > INIT_MAX_ENTRIES:
+            return [f"has {len(infos)} entries, over the {INIT_MAX_ENTRIES} an init library may have"], None
+        names = [i.filename for i in infos]
+        for name in sorted({n for n in names if names.count(n) > 1}):
+            problems.append(f"has the entry {name} twice (a second library.json would be a second library id)")
+        lowered = {}
+        for n in names:
+            lowered.setdefault(n.lower(), set()).add(n)
+        problems += [f"has entries that differ only in case: {sorted(group)}" for group in lowered.values() if len(group) > 1]
+        total, files = 0, {}
+        for info in infos:
+            name = info.filename
+            why = init_entry_name_problem(name)
+            if why:
+                problems.append(f"entry {name!r} {why}")
+                continue
+            mode = info.external_attr >> 16 if info.create_system == 3 else 0
+            if mode & 0o170000 == 0o120000:
+                problems.append(f"entry {name} is a symbolic link")
+                continue
+            if mode & 0o170000 not in (0, 0o100000, 0o040000) or (mode & 0o111 and not name.endswith("/")):
+                problems.append(f"entry {name} is not a plain file (mode {mode:o}): nothing executable goes in an init library")
+                continue
+            if info.flag_bits & 1:
+                problems.append(f"entry {name} is encrypted")
+                continue
+            if name.endswith("/"):
+                continue
+            total += info.file_size
+            if name in ("library.json", "library.sig"):
+                if name == "library.json" and info.file_size > MAX_MANIFEST:
+                    problems.append("library.json is over 1 MiB")
+                continue
+            if "/" not in name or name.split("/")[0] not in INIT_FOLDERS:
+                problems.append(f"entry {name} is outside {', '.join(f + '/' for f in INIT_FOLDERS)} (an init library holds a Sound, its samples and waveforms, type manifests and license texts: no Plugins/, no Assets/)")
+                continue
+            files[name] = info
+        if total > INIT_MAX_BYTES:
+            problems.append(f"holds {total} bytes uncompressed, over the {INIT_MAX_BYTES} an init library may hold")
+        if "library.json" not in names:
+            problems.append("has no library.json")
+        if problems:
+            return problems, None
+        # Entry by entry, each read no further than it declares; the bytes read are what is hashed and checked.
+        data = {}
+        try:
+            for name, info in files.items():
+                with z.open(info) as f:
+                    body = f.read(info.file_size + 1)
+                if len(body) != info.file_size:
+                    problems.append(f"entry {name} is not the size it declares")
+                    continue
+                if body.startswith(EXECUTABLE_MAGIC):
+                    problems.append(f"entry {name} is an executable file: nothing executable goes in an init library")
+                data[name] = body
+            manifest_bytes = z.read("library.json")
+        except (zipfile.BadZipFile, NotImplementedError, RuntimeError, OSError, EOFError) as e:
+            return problems + [f"cannot be read: {e}"], None
+    if problems:
+        return problems, None
+    try:
+        manifest = json.loads(manifest_bytes)
+        if not isinstance(manifest, dict):
+            raise ValueError
+    except ValueError:
+        return ["library.json is not a JSON object"], None
+    for field, want in (("format", "oscairn.library"), ("version", 3), ("kind", "library"), ("id", library_id)):
+        if manifest.get(field) != want or isinstance(manifest.get(field), bool):
+            problems.append(f"library.json's {field} is {json.dumps(manifest.get(field))}, not {json.dumps(want)}")
+    if manifest.get("plugins") != [] or manifest.get("assets") is not None:
+        problems.append("library.json lists plugins or an asset library: an init library holds a Sound and its content, no plugin builds")
+    if manifest.get("license") != license_:
+        problems.append(f"library.json's license is {json.dumps(manifest.get('license'))}, not {license_} (init.library.license, else the plugin's)")
+    if manifest.get("source") != source:
+        problems.append(f"library.json's source is {json.dumps(manifest.get('source'))}, not the plugin's {json.dumps(source)}")
+    listed = manifest.get("files")
+    if not isinstance(listed, dict) or listed.keys() != data.keys():
+        problems.append("library.json's `files` does not list exactly the archive's entries besides library.json and library.sig")
+    else:
+        problems += [f"entry {n} is not the SHA-256 library.json lists" for n, body in data.items() if hashlib.sha256(body).hexdigest() != listed[n]]
+    if "LicenseRef-" in license_ and not any(n.startswith("Licenses/") for n in data):
+        problems.append(f"library.json's license {license_} names a LicenseRef- and the archive has no text under Licenses/ (the rule for every package)")
+    items = manifest.get("items")
+    if not (isinstance(items, list) and len(items) == 1 and isinstance(items[0], dict) and items[0].get("kind") == "sound" and items[0].get("id") == sound):
+        return problems + [f"library.json's items are not exactly the one Sound {sound} (init.sound)"], manifest
+    folder = items[0].get("path")
+    document = f"{folder}/sound.json" if isinstance(folder, str) else None
+    if document not in data or len(data[document]) > MAX_SOUND:
+        return problems + [f"the Sound {sound} has no sound.json at its path {folder}"], manifest
+    try:
+        nodes = json.loads(data[document]).get("nodes")
+        nodes = list(nodes.values()) if isinstance(nodes, dict) else nodes
+        plays = [(n["plugin"]["id"], n["plugin"]["version"]) for n in nodes]
+    except (ValueError, AttributeError, KeyError, TypeError):
+        return problems + [f"{document} is not a Sound whose nodes name their plugins"], manifest
+    have = {p["id"]: p["version"] for p in plugins}
+    for plugin_id, version in plays:
+        if plugin_id not in have:
+            problems.append(f"the Sound {sound} plays {plugin_id}, which this release does not have")
+        elif version != have[plugin_id]:
+            problems.append(f"the Sound {sound} was saved with {plugin_id} {version}, and this release's is {have[plugin_id]}: a host opens a Sound only with the version it was saved with")
+    if not any(plugin_id in have for plugin_id, _ in plays):
+        problems.append(f"the Sound {sound} plays none of this release's plugins")
+    return problems, manifest
+
+
+def init_exception(packages, package, manifest, init_path, held, publisher, accept, problems):
+    """The init library exception (README.md): the conditions on the library a release's `init`
+    names, as a plan entry for signing it with the plugin; None, with the problems added, when any
+    fails. `held` is the id its archive declares, None when it could not be read; `publisher` the
+    plugin's, from its previous release."""
+    library_id, version = f"{package['id']}.init", package["version"]
+    before = len(problems)
+    init = manifest["init"]
+    if held != library_id:
+        problems.append(f"the init library is {held}: a release may publish only its own init library, {library_id} (its package id and .init)")
+        return None
+    if {"id": library_id, "version": version} not in manifest.get("dependencies", {}).get("packages", []):
+        problems.append(f"dependencies.packages must name {library_id} at {version}, this release's own version: a host opens a Sound only with the plugin version it was saved with, so the init library is this release's")
+    here = packages / "packages" / library_id
+    if (here / f"{version}.json").exists():
+        problems.append(f"{library_id} {version} is here already: a version never changes once merged, and the import publishes the init library with its plugin")
+    for path in sorted(here.glob("*.json")):
+        owner = json.loads(path.read_bytes()).get("publisher")
+        if owner != publisher:
+            problems.append(f"{path} is published by {owner}, not {publisher}, the publisher of {package['id']}")
+    license_ = init["library"].get("license", manifest["license"])
+    last = max(here.glob("*.json"), key=lambda p: version_key(p.stem), default=None)
+    if last is not None and json.loads(last.read_bytes()).get("license") != license_ and not accept:
+        problems.append(f"the init library's license is not {last}'s ({json.loads(last.read_bytes()).get('license')} becomes {license_}; if that is meant, run again accepting a license change)")
+    source = {"url": manifest["source"]["url"], "revision": manifest["source"]["revision"]}
+    found, contents = init_archive_problems(init_path, library_id, manifest["plugins"], init["sound"], license_, source)
+    problems += [f"{init['library']['file']} (init library) {p}" for p in found]
+    if contents is not None and not found:
+        needs = contents.get("dependencies", {}).get("packages", [])
+        problems += [f"the init library {p}" for p in package_dependency_problems(packages, library_id, needs)]
+    if len(problems) > before:
+        return None
+    return {
+        "id": library_id, "version": version, "name": contents["name"], "publisher": publisher,
+        "summary": f"The init Sound of {package['name']} {version}",
+        "tags": ["init"], "license": license_, "source": source,
+        "dependencies": contents.get("dependencies", {}).get("assets", []), "packageDependencies": contents.get("dependencies", {}).get("packages", []),
+        "library": f"init/{init['library']['file']}", "sha256": init["library"]["sha256"], "sound": init["sound"],
+        "archive": f"out/{library_id}-{version}.olib",
+    }
+
+
+def normalized(manifest):
+    """A manifest with the defaults oscairn-sign's writer fills in for what a reader treats as absent
+    (no assets or dependencies, an item without signatures), so a file that left them out compares
+    equal to its re-signed archive."""
+    m = dict(manifest)
+    for field, default in (("assets", None), ("dependencies", {"assets": []})):
+        if m.get(field) is None:
+            m[field] = default
+    m["items"] = [{"signatures": [], **i} if isinstance(i, dict) else i for i in m.get("items", [])]
+    return m
+
+
+def derived_problems(original, signed):
+    """The archive signed and published must be the file plugin-check played, re-signed: the same
+    entries with the same bytes (library.sig aside), and a manifest with the same content."""
+    problems = []
+    with zipfile.ZipFile(original) as a, zipfile.ZipFile(signed) as b:
+        before = {i.filename: i for i in a.infolist() if i.filename not in ("library.json", "library.sig")}
+        after = {i.filename: i for i in b.infolist() if i.filename not in ("library.json", "library.sig")}
+        for name in sorted(set(before) ^ set(after)):
+            problems.append(f"{name} is {'only in the file that was checked' if name in before else 'only in the archive signed'}")
+        for name in sorted(set(before) & set(after)):
+            if before[name].is_dir() or after[name].is_dir():
+                continue
+            if before[name].file_size != after[name].file_size or a.read(before[name]) != b.read(after[name]):
+                problems.append(f"{name} differs between the file that was checked and the archive signed")
+        if normalized(json.loads(a.read("library.json"))) != normalized(json.loads(b.read("library.json"))):
+            problems.append("library.json differs between the file that was checked and the archive signed")
     return problems
 
 
@@ -397,7 +623,12 @@ def commands(plan, key, tool):
         package += ["--plugin", f"{p['id']}@{p['version']}", p["name"]]
     package += [plan["archive"], "clap", plan["id"], plan["version"], plan["name"]]
     package += [f"{b['platform']}={b['path']}" for b in plan["builds"]]
-    return out + [package]
+    out.append(package)
+    if plan.get("initPackage"):
+        # The init library: the file plugin-check played, copied and signed whole by the same key.
+        init = plan["initPackage"]
+        out += [["cp", init["library"], init["archive"]], [tool, "archive", key, init["archive"]]]
+    return out
 
 
 def verify(args):
@@ -435,8 +666,11 @@ def verify(args):
     if (packages / "packages" / package["id"] / f"{package['version']}.json").exists():
         problems.append(f"{package['id']} {package['version']} is here already: a version never changes once merged")
     package_needs = manifest.get("dependencies", {}).get("packages", [])
-    problems += package_dependency_problems(packages, package["id"], package_needs)
     init = manifest.get("init")
+    arriving = {f"{package['id']}.init"} if init else set()  # the init library arrives in this run, so it need not be here yet
+    problems += package_dependency_problems(packages, package["id"], package_needs, arriving)
+    if init and init["library"]["size"] > INIT_MAX_BYTES:
+        problems.append(f"init.library.size {init['library']['size']} is over the {INIT_MAX_BYTES} bytes an init library published with its plugin may be")
     if init and init["library"]["file"] in {MANIFEST, LICENSES, *(b["file"] for b in manifest["builds"])}:
         problems.append(f"init.library.file {init['library']['file']} is also another file of the release")
     if problems:
@@ -454,8 +688,8 @@ def verify(args):
             problems.append(f"{b['file']} is not the size and SHA-256 the manifest gives")
             continue
         problems += [f"{b['platform']} build {b['file']} {p}" for p in library_problems(path, b["platform"])]
-    init_path = None
-    if init:
+    init_path, held = None, None
+    if init and init["library"]["size"] <= INIT_MAX_BYTES:
         # The init library, fetched and checked as a build is; it is only played at plugin-check and
         # is not part of the package (a library package of its own, which dependencies.packages names).
         library = init["library"]
@@ -467,10 +701,12 @@ def verify(args):
         else:
             try:
                 with zipfile.ZipFile(init_path) as z:
+                    if len(z.namelist()) != len(set(z.namelist())):
+                        raise ValueError("it has an entry twice (a second library.json would be a second library id)")
                     if z.getinfo("library.json").file_size > MAX_MANIFEST:
                         raise ValueError("its library.json is over 1 MiB")
                     held = json.loads(z.read("library.json")).get("id")
-            except (zipfile.BadZipFile, KeyError, ValueError) as e:
+            except (zipfile.BadZipFile, KeyError, ValueError, AttributeError) as e:
                 problems.append(f"{library['file']} (init library) is not a library archive: {e}")
             else:
                 if held not in [n["id"] for n in package_needs]:
@@ -490,7 +726,13 @@ def verify(args):
             (out / f["file"]).write_bytes(data)
 
     # The license, against the package's last release.
-    path, previous = previous_release(packages, package["id"])
+    path, previous = previous_release(packages, package["id"], init=bool(init))
+    init_plan = None
+    if init and init_path is not None and init_path.exists() and init_path.stat().st_size == init["library"]["size"] \
+            and sha256_file(init_path) == init["library"]["sha256"]:
+        init_plan = init_exception(packages, package, manifest, init_path, held, previous["publisher"], args.accept_license_change, problems)
+        if init_plan:
+            init_plan["channel"] = previous.get("channel", "stable")
     with tempfile.TemporaryDirectory() as temp:
         before = previous_license_files(path, previous, Path(temp))
     now = {Path(f["file"]).name: f["sha256"] for f in manifest["licenseFiles"]}
@@ -514,6 +756,7 @@ def verify(args):
         "dependencies": manifest.get("dependencies", {}).get("assets", []),
         "packageDependencies": package_needs,
         **({"init": {"library": f"init/{init['library']['file']}", "sound": init["sound"]}} if init else {}),
+        **({"initPackage": init_plan} if init_plan else {}),
         "plugins": manifest["plugins"],
         "builds": [{"platform": b["platform"], "path": f"builds/{b['platform']}/{b['file']}"} for b in builds],
         "notImported": left_out,
@@ -563,16 +806,81 @@ def plugin_check(args):
         raise Refused("\n".join(problems))
 
 
+def init_file_problems(candidate, plan):
+    """The init library file in the candidate, read again as verify read it: the file plugin-check
+    played must still be the one verify checked, and still pass every condition on its contents."""
+    init = plan["initPackage"]
+    file = candidate / init["library"]
+    if not file.is_file() or sha256_file(file) != init["sha256"]:
+        return [f"{init['library']} is not the SHA-256 verify checked"]
+    problems, _ = init_archive_problems(file, init["id"], plan["plugins"], init["sound"], init["license"], init["source"])
+    return [f"{init['library']} (init library) {p}" for p in problems]
+
+
 def sign(args):
     candidate = Path(args.candidate).resolve()
     plan = json.loads((candidate / "plan.json").read_bytes())
+    if plan.get("initPackage"):
+        problems = init_file_problems(candidate, plan)
+        if problems:
+            raise Refused("\n".join(problems))
     (candidate / "out").mkdir(exist_ok=True)
     (candidate / plan["archive"]).unlink(missing_ok=True)
+    if plan.get("initPackage"):
+        (candidate / plan["initPackage"]["archive"]).unlink(missing_ok=True)
     for argv in commands(plan, str(Path(args.key).resolve()), args.oscairn_sign):
         run = subprocess.run(argv, cwd=candidate, capture_output=True, text=True, timeout=900)
         if run.returncode != 0:
-            raise Refused(f"oscairn-sign {argv[1]} failed: {run.stderr.strip()}")
+            raise Refused(f"{Path(argv[0]).name} {argv[1]} failed: {run.stderr.strip()}")
         print(run.stdout.strip())
+    if plan.get("initPackage"):
+        problems = derived_problems(candidate / plan["initPackage"]["library"], candidate / plan["initPackage"]["archive"])
+        if problems:
+            (candidate / plan["initPackage"]["archive"]).unlink(missing_ok=True)
+            raise Refused("the init library archive signed is not the file that was checked:\n" + "\n".join(problems))
+
+
+def init_record_problems(candidate, plan, olib, key, tool):
+    """The init library's archive, as `record` checks the plugin's: signed by the publisher's key and
+    nothing else (no build), the file plugin-check played re-signed and not changed, and still
+    within the exception's limits."""
+    init = plan["initPackage"]
+    problems = init_file_problems(candidate, plan)
+    if not olib.is_file():
+        return problems + [f"{init['archive']} is not there: sign it first"]
+    run = subprocess.run([tool, "verify", str(olib)], capture_output=True, text=True, timeout=900)
+    if run.returncode != 0:
+        return problems + [f"the init library archive is refused: {run.stderr.strip()}"]
+    lines = [line.split() for line in run.stdout.splitlines()]
+    if ["archive", init["id"], key_id(key)] not in lines:
+        problems.append(f"the init library archive is not {init['id']} signed by {plan['publisher']}'s key {key_id(key)}")
+    problems += [" ".join(w) for w in lines if w[:1] in (["outside"], ["build"])]
+    if olib.stat().st_size > INIT_MAX_BYTES:
+        problems.append(f"the init library archive is {olib.stat().st_size} bytes, over the {INIT_MAX_BYTES} an init library may be")
+    if not problems:
+        problems += [f"the init library archive signed is not the file that was checked: {p}" for p in derived_problems(candidate / init["library"], olib)]
+    if not problems:  # its manifest as the archive has it, which the record must equal (build-index.py)
+        with zipfile.ZipFile(olib) as z:
+            contents = json.loads(z.read("library.json"))
+        if contents.get("license") != init["license"] or contents.get("source") != init["source"] or contents.get("id") != init["id"]:
+            problems.append("the init library archive's id, license or source is not the plan's")
+        init["packageDependencies"] = contents.get("dependencies", {}).get("packages", [])
+        init["dependencies"] = contents.get("dependencies", {}).get("assets", [])
+    return problems
+
+
+def write_init_record(packages, init, olib):
+    folder = packages / "packages" / init["id"]
+    folder.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(olib, folder / f"{init['version']}.olib")
+    r = {"format": "oscairn.repository-release", "version": 1, "id": init["id"], "release": init["version"], "publisher": init["publisher"],
+         "summary": init["summary"], "license": init["license"], "tags": init["tags"], "channel": init["channel"], "platforms": [], "source": init["source"]}
+    if init["dependencies"] or init["packageDependencies"]:
+        r["dependencies"] = {"assets": init["dependencies"], **({"packages": init["packageDependencies"]} if init["packageDependencies"] else {})}
+    r["archive"] = {"path": f"{init['version']}.olib", "sha256": sha256_file(olib), "size": olib.stat().st_size}
+    r["yanked"] = None
+    (folder / f"{init['version']}.json").write_text(json.dumps(r, indent=2, ensure_ascii=False) + "\n")
+    print(f"recorded packages/{init['id']}/{init['version']}.json (the init library, published under the init exception)")
 
 
 def record(args):
@@ -595,8 +903,14 @@ def record(args):
     if size > MAX_BESIDE:
         # shortcut: archives go beside their records; one over 95 MiB needs an https:// url, by hand, until a fork's release can hold it
         problems.append(f"the archive is {size} bytes, too large to go beside its record: give it an https:// `url` by hand")
+    init = plan.get("initPackage")
+    init_olib = candidate / init["archive"] if init else None
+    if init:
+        problems += init_record_problems(candidate, plan, init_olib, key, args.oscairn_sign)
     if problems:
         raise Refused("\n".join(problems))
+    if init:
+        write_init_record(packages, init, init_olib)
     folder = packages / "packages" / plan["id"]
     shutil.copyfile(olib, folder / f"{plan['version']}.olib")
     r = {"format": "oscairn.repository-release", "version": 1, "id": plan["id"], "release": plan["version"], "publisher": plan["publisher"],

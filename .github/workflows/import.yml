@@ -215,15 +215,23 @@ jobs:
           JOB_TOKEN: ${{ secrets.OSCAIRN_PR_TOKEN == '' }}
         run: |
           notice=$(cat "$RUNNER_TEMP/candidate/notice.txt")
-          read -r id version fork tag revision < <(python3 -I -c 'import json, sys; p = json.load(open(sys.argv[1])); print(p["id"], p["version"], p["source"]["url"].rsplit("/", 1)[1], p["tag"], p["source"]["revision"])' "$RUNNER_TEMP/candidate/plan.json")
+          read -r id version fork tag revision init < <(python3 -I -c 'import json, sys; p = json.load(open(sys.argv[1])); print(p["id"], p["version"], p["source"]["url"].rsplit("/", 1)[1], p["tag"], p["source"]["revision"], p.get("initPackage", {}).get("id", "-"))' "$RUNNER_TEMP/candidate/plan.json")
           branch="import/$id-$version"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$branch"
           git add "packages/$id/$version.json" "packages/$id/$version.olib"
-          git commit -q -m "$id $version: oscairn/$fork $tag"
+          title="$id $version"
+          extra=""
+          if [ "$init" != "-" ]; then
+            # The init library exception (README.md): the plugin's own init library, signed and added in this same run.
+            git add "packages/$init/$version.json" "packages/$init/$version.olib"
+            title="$id $version and its init library $init"
+            extra="Also publishes its init library $init $version, signed with the publisher key under the init library exception (README.md): the archive is the file plugin-check played, re-signed, with the same entries and bytes. "
+          fi
+          git commit -q -m "$title: oscairn/$fork $tag"
           git push "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git" "HEAD:refs/heads/$branch"
-          gh pr create --base main --head "$branch" --title "$id $version" --body "Imported from https://github.com/oscairn/$fork/releases/tag/$tag (\`$revision\`) by $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID: its manifest, hashes, source tag, libraries and license checked, each build played by oscairn-plugin-check on its platform, signed with the publisher key. ${notice:+Not imported: $notice. }Merge once Check passes."
+          gh pr create --base main --head "$branch" --title "$title" --body "${extra}Imported from https://github.com/oscairn/$fork/releases/tag/$tag (\`$revision\`) by $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID: its manifest, hashes, source tag, libraries and license checked, each build played by oscairn-plugin-check on its platform, signed with the publisher key. ${notice:+Not imported: $notice. }Merge once Check passes."
           if [ "$JOB_TOKEN" = true ]; then
             echo "::warning::Opened with the job's own token, which starts no workflow: close and reopen the pull request so Check runs, or set OSCAIRN_PR_TOKEN."
           fi
