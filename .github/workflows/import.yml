@@ -168,7 +168,9 @@ jobs:
     # reviewers approve each run, from main only). Only the Sign step sees the key; it never runs
     # plugin code, and the key is written to a file only it can read and removed when it ends.
     needs: candidate
-    if: github.ref == 'refs/heads/main'
+    # A status function is needed here: without one, GitHub skips this job whenever plugin-check was
+    # skipped (a library-only release), although candidate succeeded.
+    if: ${{ !cancelled() && needs.candidate.result == 'success' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     environment: publisher-signing
