@@ -523,6 +523,38 @@ def main(tool, plugin_check=None):
         (packages / "removed.json").unlink()
         release()
 
+        # A first release of a new package id: only when asked for, and only for an id with no release here.
+        def new_id(m):
+            m["package"]["id"] = "org.oscairn.brandnew"
+        release(change=new_id)
+        before = tree(packages)
+        candidate, result = verify()
+        check(result.returncode == 1 and "no release of org.oscairn.brandnew here yet" in result.stderr and "--first-release" in result.stderr
+              and not (candidate / "plan.json").exists() and tree(packages) == before, "a new id without the flag is refused, naming it: " + result.stderr.strip()[-300:])
+        candidate, result = verify("--first-release")
+        first_plan = json.loads((candidate / "plan.json").read_bytes()) if result.returncode == 0 else {}
+        shown = (candidate / "first-release.txt").read_text() if (candidate / "first-release.txt").exists() else ""
+        check(result.returncode == 0 and first_plan.get("firstRelease") is True and first_plan.get("publisher") == "org.oscairn" and first_plan.get("tags") == []
+              and "license: MIT" in shown and "source: https://github.com/oscairn/arpeggiator v0.1.5 (" + revision + ")" in shown and "license: MIT" in result.stdout
+              and tree(packages) == before, "a new id with the flag is accepted, and its license and source are shown: " + result.stdout + result.stderr)
+        result = run(sys.executable, "-I", SCRIPT, "sign", "--candidate", candidate, "--key", temp / "keys" / "test.key", "--oscairn-sign", tool)
+        first_packages = temp / "packages-first"
+        shutil.copytree(packages, first_packages)
+        result = run(sys.executable, "-I", SCRIPT, "record", "--candidate", candidate, "--oscairn-sign", tool, "--packages", first_packages)
+        r = json.loads((first_packages / "packages" / "org.oscairn.brandnew" / "0.1.5.json").read_bytes()) if result.returncode == 0 else {}
+        check(result.returncode == 0 and r.get("publisher") == "org.oscairn" and r.get("license") == "MIT", "and it signs and records, for Oscairn's publisher: " + result.stdout + result.stderr)
+        release()
+        _, result = verify("--first-release")
+        check(result.returncode == 1 and "org.oscairn.arpeggiator has a release here already" in result.stderr, "the flag on an id that has a release is refused: " + result.stderr.strip()[-300:])
+        (packages / "removed.json").write_text(json.dumps({"format": "oscairn.repository-removals", "version": 1, "versions": [
+            {"id": "org.oscairn.brandnew", "version": "0.9.0", "reason": "test", "date": "2026-11-17"}]}))
+        release(change=new_id)
+        for extra in ((), ("--first-release",)):
+            _, result = verify(*extra)
+            check(result.returncode == 1 and "removed.json lists it" in result.stderr, f"a removed id is refused {'with' if extra else 'without'} the flag: " + result.stderr.strip()[-300:])
+        (packages / "removed.json").unlink()
+        release()
+
         # Refusals: each condition, with its message, and nothing written by verify.
         def refused(case, wanted, **options):
             before = tree(packages)
@@ -543,7 +575,7 @@ def main(tool, plugin_check=None):
         refused("a library under the plugin's id but one more part", "a release may publish only its own init library", data=library_of(library_id=init_id + ".extra"))
         refused("an init library under another plugin's id", "a release may publish only its own init library", data=library_of(library_id="org.oscairn.sampler.init"))
         # (b) a brand-new plugin
-        refused("an init library with a brand-new plugin (first release by hand)", "no release of org.oscairn.brandnew here yet: its first release is submitted by hand (README.md), and so is its init library org.oscairn.brandnew.init that once",
+        refused("an init library with a brand-new plugin (no --first-release)", "no release of org.oscairn.brandnew here yet: a first release of a new package id is imported only when asked for (--first-release",
                 change=lambda m: (with_init(data=library_of(library_id="org.oscairn.brandnew.init"), needs=(("org.oscairn.brandnew.init", "0.1.5"),))(m),
                                   m["package"].update(id="org.oscairn.brandnew")))
         # (c) the publisher
