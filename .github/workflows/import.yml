@@ -250,11 +250,7 @@ jobs:
           if [ -n "$first" ]; then
             # No earlier release to compare with: the approver accepts this license and source for the first time.
             title="$title (first release of a new package id)"
-            body_first="First release of a new package id, imported because the dispatcher asked for it (first-release). Nothing earlier to compare with, so the license and source are shown here:
-
-$first
-
-"
+            body_first=$(printf 'First release of a new package id, imported because the dispatcher asked for it (first-release). Nothing earlier to compare with, so the license and source are shown here:\n\n%s' "$first")$'\n\n'
           fi
           git commit -q -m "$title: oscairn/$fork $tag"
           git push "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git" "HEAD:refs/heads/$branch"
