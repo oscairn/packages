@@ -1,0 +1,24 @@
+{
+  "format": "oscairn.repository-release",
+  "version": 1,
+  "id": "org.oscairn.sample-types",
+  "release": "1.0.0",
+  "publisher": "org.oscairn",
+  "summary": "The sample and waveform item types, for samplers and sample content",
+  "license": "MIT",
+  "tags": [
+    "types"
+  ],
+  "channel": "stable",
+  "platforms": [],
+  "source": {
+    "url": "https://github.com/oscairn/oscairn",
+    "revision": "3e022c57b5e3e76833686c66facafaf11bea8297"
+  },
+  "archive": {
+    "path": "1.0.0.olib",
+    "sha256": "a46a87d4ddfac5e70fcf362cac6b8b04f39d00fb0eda6d34c9d52d5a23e36508",
+    "size": 2231
+  },
+  "yanked": null
+}
