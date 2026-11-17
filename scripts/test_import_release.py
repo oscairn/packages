@@ -99,7 +99,8 @@ def main(tool, plugin_check=None):
         packages = temp / "packages"
         (packages / "publishers").mkdir(parents=True)
         (packages / "packages").mkdir()
-        shutil.copytree(PREVIOUS, packages / "packages" / PREVIOUS.name, ignore=shutil.ignore_patterns("0.1.3*"))
+        # Only 0.1.4, the release the fixture is made from: a newer record here (its license files named otherwise) must not change what the test compares with.
+        shutil.copytree(PREVIOUS, packages / "packages" / PREVIOUS.name, ignore=lambda d, names: [n for n in names if not n.startswith("0.1.4.")])
         publisher = {"format": "oscairn.repository-publisher", "version": 1, "id": "org.oscairn", "name": "Oscairn", "key": test_key,
                      "verification": "https://oscairn.org/.well-known/oscairn-publisher.json"}
         (packages / "publishers" / "org.oscairn.json").write_text(json.dumps(publisher))
@@ -205,7 +206,7 @@ def main(tool, plugin_check=None):
         _, result = verify()
         check(result.returncode == 1 and "license MIT becomes GPL-3.0-or-later" in result.stderr, "a changed license is refused: " + result.stderr)
 
-        for url, listed in (("https://github.com/oscairn/other", False), ("https://github.com/oscairn/va", True), ("https://github.com/oscairn/sampler", True)):
+        for url, listed in (("https://github.com/oscairn/other", False), ("https://github.com/oscairn/va", True), ("https://github.com/oscairn/sampler", True), ("https://github.com/oscairn/fm", True)):
             release(change=lambda m: m["source"].update(url=url))
             _, result = verify()
             check(("is not one of Oscairn's plugin repositories" not in result.stderr) == listed, f"{url} is {'listed' if listed else 'refused'}: " + result.stderr)
