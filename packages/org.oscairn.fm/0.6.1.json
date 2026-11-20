@@ -1,0 +1,29 @@
+{
+  "format": "oscairn.repository-release",
+  "version": 1,
+  "id": "org.oscairn.fm",
+  "release": "0.6.1",
+  "publisher": "org.oscairn",
+  "summary": "Oscairn's eight-operator FM synthesis instrument.",
+  "license": "AGPL-3.0-or-later",
+  "tags": [
+    "instrument",
+    "synthesizer"
+  ],
+  "channel": "stable",
+  "platforms": [
+    "linux-arm64",
+    "linux-x86_64",
+    "macos-arm64"
+  ],
+  "source": {
+    "url": "https://github.com/oscairn/fm",
+    "revision": "6ed9964ee28ce0b8b613c7e9f6f0256b3aaaac00"
+  },
+  "archive": {
+    "path": "0.6.1.olib",
+    "sha256": "8b03bd54b1c9de9eeb29ee714ac33030256f617136cdd2ef03f80060e4793ecf",
+    "size": 1269358
+  },
+  "yanked": null
+}
