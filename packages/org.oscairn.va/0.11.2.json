@@ -1,0 +1,26 @@
+{
+  "format": "oscairn.repository-release",
+  "version": 1,
+  "id": "org.oscairn.va",
+  "release": "0.11.2",
+  "publisher": "org.oscairn",
+  "summary": "Oscairn's virtual analog instrument.",
+  "license": "AGPL-3.0-or-later",
+  "tags": [],
+  "channel": "stable",
+  "platforms": [
+    "linux-arm64",
+    "linux-x86_64",
+    "macos-arm64"
+  ],
+  "source": {
+    "url": "https://github.com/oscairn/va",
+    "revision": "8c068ac19fca2608ff4be041de98fc2b18a2ce2e"
+  },
+  "archive": {
+    "path": "0.11.2.olib",
+    "sha256": "25711b75eefccc95a6bcf65858dba72f85aa84ddcce51fb03994ec31eae34c98",
+    "size": 592449
+  },
+  "yanked": null
+}
