@@ -1,0 +1,24 @@
+{
+  "format": "oscairn.repository-release",
+  "version": 1,
+  "id": "org.oscairn.sampler.init",
+  "release": "0.9.10",
+  "publisher": "org.oscairn",
+  "summary": "The init Sound of Oscairn Sampler 0.9.10",
+  "license": "CC0-1.0",
+  "tags": [
+    "init"
+  ],
+  "channel": "stable",
+  "platforms": [],
+  "source": {
+    "url": "https://github.com/oscairn/sampler",
+    "revision": "ec789c24e2ffaed82be2aff9350adabff9be5307"
+  },
+  "archive": {
+    "path": "0.9.10.olib",
+    "sha256": "3024cdd6c313814c0281fb12bab699ae3cfa752323e8bbce9b7b0ca1fad0aa0e",
+    "size": 6863
+  },
+  "yanked": null
+}
