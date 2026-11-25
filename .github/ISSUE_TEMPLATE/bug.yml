@@ -1,0 +1,23 @@
+name: Bug report
+description: Something does not work as expected
+labels: ["bug"]
+body:
+  - type: textarea
+    id: happened
+    attributes: {label: What happened, description: What you saw.}
+    validations: {required: true}
+  - type: textarea
+    id: expected
+    attributes: {label: What you expected}
+    validations: {required: true}
+  - type: textarea
+    id: steps
+    attributes: {label: Steps to reproduce, placeholder: "1. ...\n2. ..."}
+    validations: {required: true}
+  - type: input
+    id: device
+    attributes: {label: "Device, Oscairn version and Package name and version", placeholder: "FANTOM, Oscairn 0.x.y, packages 0.x.y"}
+    validations: {required: true}
+  - type: textarea
+    id: logs
+    attributes: {label: Logs, description: Paste relevant log lines or attach a file. Leave out anything private., render: shell}
