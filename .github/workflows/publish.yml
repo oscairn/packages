@@ -137,7 +137,11 @@ jobs:
             if gh release view "$tag" --json assets --jq '.assets[].name' | grep -qx "$sha"; then
               continue
             fi
-            gh release upload "$tag" "$RUNNER_TEMP/cache/$sha"
+            # A listing can miss an asset another attempt of this run just uploaded: its name is its
+            # SHA-256, so one already there is this file.
+            if ! out=$(gh release upload "$tag" "$RUNNER_TEMP/cache/$sha" 2>&1); then
+              case "$out" in *"already exists"*) echo "$sha: already uploaded" ;; *) echo "$out" >&2; exit 1 ;; esac
+            fi
           done < site/blobs.txt
           rm site/blobs.txt
 
@@ -159,7 +163,10 @@ jobs:
             if gh release view "$tag" --json assets --jq '.assets[].name' | grep -qxF "$file"; then
               continue
             fi
-            gh release upload "$tag" "$RUNNER_TEMP/exports/$file"
+            # The same as the pieces': one already there is kept (it is made from the same pieces).
+            if ! out=$(gh release upload "$tag" "$RUNNER_TEMP/exports/$file" 2>&1); then
+              case "$out" in *"already exists"*) echo "$file: already uploaded" ;; *) echo "$out" >&2; exit 1 ;; esac
+            fi
           done < site/exports.txt
           gh release list --limit 1000 --json tagName --jq '.[].tagName | select(startswith("exports-"))' |
             while read -r tag; do
