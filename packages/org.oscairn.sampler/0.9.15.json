@@ -1,0 +1,38 @@
+{
+  "format": "oscairn.repository-release",
+  "version": 1,
+  "id": "org.oscairn.sampler",
+  "release": "0.9.15",
+  "publisher": "org.oscairn",
+  "summary": "Oscairn's sample-playback instrument.",
+  "license": "AGPL-3.0-or-later",
+  "tags": [
+    "instrument",
+    "sampler"
+  ],
+  "channel": "stable",
+  "platforms": [
+    "linux-arm64",
+    "linux-x86_64",
+    "macos-arm64"
+  ],
+  "source": {
+    "url": "https://github.com/oscairn/sampler",
+    "revision": "14d107b54efcd96ff7aa9c8805d01321747ec078"
+  },
+  "dependencies": {
+    "assets": [],
+    "packages": [
+      {
+        "id": "org.oscairn.sampler.init",
+        "version": "0.9.15"
+      }
+    ]
+  },
+  "archive": {
+    "path": "0.9.15.olib",
+    "sha256": "1330dc95320e114b6ec309bc331d373033bd2cd604e9bc32e1b78fb4631ef2e7",
+    "size": 1017625
+  },
+  "yanked": null
+}
