@@ -103,6 +103,12 @@
       "version": "0.1.0",
       "reason": "A retired fork; archived and no longer maintained (oscairn/oscairn#319)",
       "date": "2026-11-26"
+    },
+    {
+      "id": "org.oscairn.fm-cartridges",
+      "version": "1.0.0",
+      "reason": "Presets of the retired Dexed-based FM; the current FM cannot read them (oscairn/oscairn#319)",
+      "date": "2026-11-26"
     }
   ]
 }
