@@ -49,6 +49,66 @@
       "version": "0.6.3",
       "reason": "The old sampler; the id now belongs to the new Sampler, first released here as 0.9.5",
       "date": "2026-11-17"
+    },
+    {
+      "id": "org.oscairn.analog",
+      "version": "0.4.1",
+      "reason": "A retired fork; archived and no longer maintained (oscairn/oscairn#319)",
+      "date": "2026-11-26"
+    },
+    {
+      "id": "org.oscairn.analog",
+      "version": "0.4.10",
+      "reason": "A retired fork; archived and no longer maintained (oscairn/oscairn#319)",
+      "date": "2026-11-26"
+    },
+    {
+      "id": "org.oscairn.analog",
+      "version": "0.4.2",
+      "reason": "A retired fork; archived and no longer maintained (oscairn/oscairn#319)",
+      "date": "2026-11-26"
+    },
+    {
+      "id": "org.oscairn.analog",
+      "version": "0.4.3",
+      "reason": "A retired fork; archived and no longer maintained (oscairn/oscairn#319)",
+      "date": "2026-11-26"
+    },
+    {
+      "id": "org.oscairn.analog",
+      "version": "0.4.4",
+      "reason": "A retired fork; archived and no longer maintained (oscairn/oscairn#319)",
+      "date": "2026-11-26"
+    },
+    {
+      "id": "org.oscairn.analog",
+      "version": "0.4.5",
+      "reason": "A retired fork; archived and no longer maintained (oscairn/oscairn#319)",
+      "date": "2026-11-26"
+    },
+    {
+      "id": "org.oscairn.analog",
+      "version": "0.4.7",
+      "reason": "A retired fork; archived and no longer maintained (oscairn/oscairn#319)",
+      "date": "2026-11-26"
+    },
+    {
+      "id": "org.oscairn.analog-factory",
+      "version": "1.0.0",
+      "reason": "A retired fork; archived and no longer maintained (oscairn/oscairn#319)",
+      "date": "2026-11-26"
+    },
+    {
+      "id": "org.oscairn.legacy-sampler",
+      "version": "0.1.0",
+      "reason": "A retired fork; archived and no longer maintained (oscairn/oscairn#319)",
+      "date": "2026-11-26"
+    },
+    {
+      "id": "org.oscairn.fm-cartridges",
+      "version": "1.0.0",
+      "reason": "Presets of the retired Dexed-based FM; the current FM cannot read them (oscairn/oscairn#319)",
+      "date": "2026-11-26"
     }
   ]
 }
